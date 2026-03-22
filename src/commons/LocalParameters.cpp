@@ -16,6 +16,12 @@ LocalParameters::LocalParameters() :
     // Defaults
     teaWeight = 1.4;
     teaMatrixFile = "";
+    compBiasCorrectionScale = 0.5;
+    maskMode = 0;
+    gapOpen = MultiParam<NuclAA<int>>(NuclAA<int>(14, 5));
+    gapExtend = MultiParam<NuclAA<int>>(NuclAA<int>(2, 2));
+    maxResListLen = 500;
+    evalThr = 100.0;
 
     // createteadb parameters
     createteadb.push_back(&PARAM_WRITE_LOOKUP);
@@ -26,8 +32,12 @@ LocalParameters::LocalParameters() :
     // teaalign = align + TEA-specific params
     teaalign = combineList(align, {&PARAM_TEA_WEIGHT, &PARAM_TEA_MAT});
 
-    // teasearch = prefilter + teaalign + common
+    // tearescorediagonal = align + TEA-specific params (for ungapped diagonal rescoring)
+    tearescorediagonal = combineList(align, {&PARAM_TEA_WEIGHT, &PARAM_TEA_MAT});
+
+    // teasearch = prefilter + teaalign + tearescorediagonal + common
     teasearchworkflow = combineList(prefilter, teaalign);
+    teasearchworkflow = combineList(teasearchworkflow, tearescorediagonal);
     teasearchworkflow = combineList(teasearchworkflow, {&PARAM_RUNNER, &PARAM_REUSELATEST});
 
     // easyteasearch = teasearch + createteadb + convertalis

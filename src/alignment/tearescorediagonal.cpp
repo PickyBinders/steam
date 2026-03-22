@@ -6,7 +6,6 @@
 #include "LocalParameters.h"
 #include "Matcher.h"
 #include "Alignment.h"
-#include "EvalueComputation.h"
 #include "DistanceCalculator.h"
 #include "QueryMatcher.h"
 #include "FastSort.h"
@@ -17,8 +16,15 @@
 #include <omp.h>
 #endif
 
-// Power-corrected E-value, following Foldseek (Van Kempen et al. 2024)
-static const double EVALUE_CORRECTION_EXPONENT = 0.32;
+// Log-linear E-value model following Edgar & Sahakyan (2025).
+// E(s) = (H/Q) * 10^(m*s + c)
+// See evalue_calibration/14_sweep_analysis.py.
+static const double LOGLINEAR_M_LN = -0.018367 * 2.302585093;
+static const double LOGLINEAR_C_LN = 0.7798 * 2.302585093;
+
+static double computeEvalue(double score, double hitsPerQuery) {
+    return hitsPerQuery * exp(LOGLINEAR_M_LN * score + LOGLINEAR_C_LN);
+}
 
 template<typename T>
 static DistanceCalculator::LocalAlignment ungappedAlignment(const T *seqTea1,
@@ -52,7 +58,7 @@ static Matcher::result_t ungappedAlignTea(Sequence &qSeqAA, Sequence &qSeqTea,
                                            Sequence &tSeqAA, Sequence &tSeqTea,
                                            int diagonal, SubstitutionMatrix &subMatAA,
                                            SubstitutionMatrix &subMatTea,
-                                           EvalueComputation &evaluer,
+                                           double hitsPerQuery,
                                            std::string &backtrace, const Parameters &par) {
     DistanceCalculator::LocalAlignment res;
     float seqId = 0.0;
@@ -88,7 +94,7 @@ static Matcher::result_t ungappedAlignTea(Sequence &qSeqAA, Sequence &qSeqTea,
         res.endPos = tmp.endPos;
     }
 
-    double evalue = pow(evaluer.computeEvalue(res.score, qSeqAA.L), EVALUE_CORRECTION_EXPONENT);
+    double evalue = computeEvalue(res.score, hitsPerQuery);
 
     unsigned int distanceToDiagonal = res.distToDiagonal;
 
@@ -118,11 +124,8 @@ static Matcher::result_t ungappedAlignTea(Sequence &qSeqAA, Sequence &qSeqTea,
         return Matcher::result_t(UINT_MAX, res.score, queryCov, targetCov, seqId, evalue, alnLength,
                                  qStartPos, qEndPos, qSeqAA.L, dbStartPos, dbEndPos, tSeqAA.L, backtrace);
     }
-    bool hasLowerEvalue = evalue > par.evalThr;
-    if (hasLowerEvalue) {
-        return Matcher::result_t(UINT_MAX, res.score, queryCov, targetCov, seqId, evalue, alnLength,
-                                 qStartPos, qEndPos, qSeqAA.L, dbStartPos, dbEndPos, tSeqAA.L, backtrace);
-    } else {
+    // No E-value filtering in ungapped rescoring — let gapped alignment decide.
+    {
         int idCnt = 0;
         for (int i = qStartPos; i <= qEndPos; i++) {
             char qLetter = qSeqAA.numSequence[i];
@@ -181,7 +184,7 @@ int tearescorediagonal(int argc, const char **argv, const Command &command) {
         Debug(Debug::ERROR) << "TEA substitution matrix (--tea-mat) is required for tearescorediagonal\n";
         EXIT(EXIT_FAILURE);
     }
-    SubstitutionMatrix subMatTea(par.teaMatrixFile.c_str(), 2.0, par.scoreBias);
+    SubstitutionMatrix subMatTea(par.teaMatrixFile.c_str(), 1.0, par.scoreBias);
 
     // AA substitution matrix (from --sub-mat, weighted by --tea-weight)
     float aaFactor = par.teaWeight;
@@ -189,8 +192,7 @@ int tearescorediagonal(int argc, const char **argv, const Command &command) {
 
     Debug::Progress progress(resultReader.getSize());
 
-    EvalueComputation evaluer(tTeaDbr->sequenceReader->getAminoAcidDBSize(), &subMatTea,
-                               par.gapOpen.values.aminoacid(), par.gapExtend.values.aminoacid());
+    double hitsPerQuery = static_cast<double>(par.maxResListLen);
 
 #pragma omp parallel
     {
@@ -245,9 +247,11 @@ int tearescorediagonal(int argc, const char **argv, const Command &command) {
                         continue;
                     }
 
-                    Matcher::result_t res = ungappedAlignTea(qSeqAA, qSeqTea, tSeqAA, tSeqTea,
+                    Matcher::result_t res = ungappedAlignTea(qSeqAA, qSeqTea,
+                                                              tSeqAA, tSeqTea,
                                                               static_cast<short>(prefHit.diagonal),
-                                                              subMatAA, subMatTea, evaluer, backtrace, par);
+                                                              subMatAA, subMatTea, hitsPerQuery,
+                                                              backtrace, par);
 
                     if (res.dbKey == UINT_MAX) {
                         rejected++;

@@ -5,6 +5,7 @@
 
 extern int createteadb(int argc, const char **argv, const Command& command);
 extern int teaalign(int argc, const char **argv, const Command& command);
+extern int tearescorediagonal(int argc, const char **argv, const Command& command);
 extern int steamconvertalis(int argc, const char **argv, const Command& command);
 extern int teasearch(int argc, const char **argv, const Command& command);
 extern int easyteasearch(int argc, const char **argv, const Command& command);

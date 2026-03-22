@@ -61,6 +61,16 @@ std::vector<Command> steamCommands = {
                 CITATION_MMSEQS2, {{"steamDB", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA, &DbValidator::sequenceDb },
                                    {"clusterDB", DbType::ACCESS_MODE_OUTPUT, DbType::NEED_DATA, &DbValidator::resultDb },
                                    {"tmpDir", DbType::ACCESS_MODE_OUTPUT, DbType::NEED_DATA, &DbValidator::directory }}},
+        // Ungapped diagonal rescoring
+        {"tearescorediagonal", tearescorediagonal, &localPar.tearescorediagonal, COMMAND_ALIGNMENT,
+                "Rescore prefilter diagonals with TEA+AA combined ungapped scoring",
+                "steam tearescorediagonal queryDB targetDB prefiltResult rescoreResult --tea-mat matcha.out\n",
+                "Janani Durairaj <janani.durairaj@unibas.ch>",
+                "<i:queryDB> <i:targetDB> <i:prefiltResult> <o:rescoreResult>",
+                CITATION_MMSEQS2, {{"queryDB", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA, &DbValidator::sequenceDb },
+                                   {"targetDB", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA, &DbValidator::sequenceDb },
+                                   {"prefiltResult", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA, &DbValidator::resultDb },
+                                   {"rescoreResult", DbType::ACCESS_MODE_OUTPUT, DbType::NEED_DATA, &DbValidator::alignmentDb }}},
         // Alignment
         {"align",        teaalign,     &localPar.teaalign,              COMMAND_ALIGNMENT,
                 "Align with combined TEA+AA dual scoring",

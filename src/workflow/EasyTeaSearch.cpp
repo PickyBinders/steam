@@ -6,9 +6,14 @@
 
 #include "easyteasearch.sh.h"
 
+static void teaSearchDefault(LocalParameters &par) {
+    par.compBiasCorrectionScale = 0.5;
+}
+
 int easyteasearch(int argc, const char **argv, const Command &command) {
     LocalParameters &par = LocalParameters::getLocalInstance();
     par.parseParameters(argc, argv, command, true, 0, 0);
+    teaSearchDefault(par);
 
     std::string tmpDir = par.filenames.back();
     std::string hash = SSTR(par.hashParameter(command.databases, par.filenames, par.teasearchworkflow));

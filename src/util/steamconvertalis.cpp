@@ -565,9 +565,14 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
                                     case Parameters::OUTFMT_ALNLEN:
                                         result.append(SSTR(alnLen));
                                         break;
-                                    case Parameters::OUTFMT_RAW:
-                                        result.append(SSTR(static_cast<int>(evaluer->computeRawScoreFromBitScore(res.score) + 0.5)));
+                                    case Parameters::OUTFMT_RAW: {
+                                        // Convert bit score back to raw using combined TEA+AA K-A parameters
+                                        static const double COMBINED_LAMBDA = 0.27817197;
+                                        static const double COMBINED_LOG_K  = -4.2523;
+                                        int rawScore = static_cast<int>((COMBINED_LOG_K + res.score * log(2.0)) / COMBINED_LAMBDA + 0.5);
+                                        result.append(SSTR(rawScore));
                                         break;
+                                    }
                                     case Parameters::OUTFMT_BITS:
                                         result.append(SSTR(res.score));
                                         break;
@@ -822,7 +827,9 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
                     }
                     case Parameters::FORMAT_ALIGNMENT_SAM: {
                         bool forward = res.qEndPos > res.qStartPos;
-                        int rawScore = static_cast<int>(evaluer->computeRawScoreFromBitScore(res.score) + 0.5);
+                        static const double COMBINED_LAMBDA_SAM = 0.27817197;
+                        static const double COMBINED_LOG_K_SAM  = -4.2523;
+                        int rawScore = static_cast<int>((COMBINED_LOG_K_SAM + res.score * log(2.0)) / COMBINED_LAMBDA_SAM + 0.5);
                         uint32_t mapq = -4.343 * log(exp(static_cast<double>(-rawScore)));
                         mapq = (uint32_t) (mapq + 4.99);
                         mapq = mapq < 254 ? mapq : 254;

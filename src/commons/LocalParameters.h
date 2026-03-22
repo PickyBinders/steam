@@ -30,6 +30,7 @@ public:
     // Parameter vectors for TEA commands
     std::vector<MMseqsParameter*> createteadb;
     std::vector<MMseqsParameter*> teaalign;
+    std::vector<MMseqsParameter*> tearescorediagonal;
 
     // Workflow parameter vectors
     std::vector<MMseqsParameter*> teasearchworkflow;
