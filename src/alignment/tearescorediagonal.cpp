@@ -17,10 +17,10 @@
 #endif
 
 // Log-linear E-value model following Edgar & Sahakyan (2025).
-// E(s) = (H/Q) * 10^(m*s + c)
-// See evalue_calibration/14_sweep_analysis.py.
-static const double LOGLINEAR_M_LN = -0.018367 * 2.302585093;
-static const double LOGLINEAR_C_LN = 0.7798 * 2.302585093;
+// E(s) = (H/Q) * 10^(m*s + c), where s = raw * min(qcov, tcov).
+// See evalue_calibration/17_sweep_features.py.
+static const double LOGLINEAR_M_LN = -0.017364 * 2.302585093;
+static const double LOGLINEAR_C_LN = -0.7636 * 2.302585093;
 
 static double computeEvalue(double score, double hitsPerQuery) {
     return hitsPerQuery * exp(LOGLINEAR_M_LN * score + LOGLINEAR_C_LN);
@@ -94,8 +94,6 @@ static Matcher::result_t ungappedAlignTea(Sequence &qSeqAA, Sequence &qSeqTea,
         res.endPos = tmp.endPos;
     }
 
-    double evalue = computeEvalue(res.score, hitsPerQuery);
-
     unsigned int distanceToDiagonal = res.distToDiagonal;
 
     int qStartPos, qEndPos, dbStartPos, dbEndPos;
@@ -118,6 +116,10 @@ static Matcher::result_t ungappedAlignTea(Sequence &qSeqAA, Sequence &qSeqTea,
 
     float queryCov = (std::min((unsigned int)qSeqAA.L, (unsigned int)qEndPos) - (unsigned int)qStartPos + 1) / (float)qSeqAA.L;
     float targetCov = (std::min((unsigned int)tSeqAA.L, (unsigned int)dbEndPos) - (unsigned int)dbStartPos + 1) / (float)tSeqAA.L;
+
+    // Coverage-weighted score for E-value (sqrt coverage)
+    double covScore = res.score * sqrt(std::min(queryCov, targetCov));
+    double evalue = computeEvalue(covScore, hitsPerQuery);
 
     bool hasLowerCoverage = !(Util::hasCoverage(par.covThr, par.covMode, queryCov, targetCov));
     if (hasLowerCoverage) {
@@ -179,14 +181,14 @@ int tearescorediagonal(int argc, const char **argv, const Command &command) {
                  par.compressed, Parameters::DBTYPE_ALIGNMENT_RES);
     dbw.open();
 
-    // TEA substitution matrix (from --tea-mat)
+    // TEA substitution matrix (from --matcha)
     if (par.teaMatrixFile.empty()) {
-        Debug(Debug::ERROR) << "TEA substitution matrix (--tea-mat) is required for tearescorediagonal\n";
+        Debug(Debug::ERROR) << "TEA substitution matrix (--matcha) is required for tearescorediagonal\n";
         EXIT(EXIT_FAILURE);
     }
     SubstitutionMatrix subMatTea(par.teaMatrixFile.c_str(), 1.0, par.scoreBias);
 
-    // AA substitution matrix (from --sub-mat, weighted by --tea-weight)
+    // AA substitution matrix (from --sub-mat, weighted by --aa-weight)
     float aaFactor = par.teaWeight;
     SubstitutionMatrix subMatAA(par.scoringMatrixFile.values.aminoacid().c_str(), aaFactor, par.scoreBias);
 

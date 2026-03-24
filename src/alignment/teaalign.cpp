@@ -17,23 +17,19 @@
 #include <omp.h>
 #endif
 
-// Combined TEA+AA Karlin-Altschul parameters for bit score computation.
-// Computed analytically from the joint (TEA,AA) substitution matrix.
-// See evalue_calibration/04_compute_ka_params.py.
-static const double COMBINED_LAMBDA = 0.27817197;
-static const double COMBINED_LOG_K  = -4.2523; // log(0.01423807)
-
 // Log-linear E-value model following Edgar & Sahakyan (2025).
 // E(s) = (H/Q) * 10^(m*s + c)
-// where H/Q = total reported hits / number of queries.
+// where s = raw_score * sqrt(min(qcov, tcov)) (coverage-weighted score),
+// H/Q = total reported hits / number of queries.
 // Parameters fitted on SCOP40 FP distribution (diff fold) with P(reported) correction.
-// Cross-fold homologies (beta-propellers b.66-70, Rossmann c.2-5/c.27/c.28/c.30/c.31) excluded.
-// Fitted for: tea-weight=1.4, gap-open=14, gap-extend=2, max-seqs=500.
-// See evalue_calibration/14_sweep_analysis.py.
-static const double LOGLINEAR_M = -0.018367;
-static const double LOGLINEAR_C = 0.7798;
-static const double LOGLINEAR_M_LN = -0.018367 * 2.302585093;
-static const double LOGLINEAR_C_LN = 0.7798 * 2.302585093;
+// Fitted for: raw*sqrt(cov) scoring, tea-weight=1.4, gap-open=14, gap-extend=2, max-seqs=2000,
+// k=6, spaced pattern 110101101.
+// Fitted on SCOP40c (Edgar's curated subset), FPEPQ range 0.1-10.
+// See bench_scop40c/03_fit_and_evaluate.py.
+static const double LOGLINEAR_M = -0.017364;
+static const double LOGLINEAR_C = -0.7636;
+static const double LOGLINEAR_M_LN = -0.017364 * 2.302585093;
+static const double LOGLINEAR_C_LN = -0.7636 * 2.302585093;
 
 static double computeEvalue(double score, double hitsPerQuery) {
     return hitsPerQuery * exp(LOGLINEAR_M_LN * score + LOGLINEAR_C_LN);
@@ -59,7 +55,9 @@ static int doTeaAlign(TeaSmithWaterman &teaSW,
         return -1;
     }
 
-    align.evalue = computeEvalue(align.score1, hitsPerQuery);
+    // Coverage-weighted score for E-value computation and ranking
+    double covScore = align.score1 * sqrt(std::min(align.qCov, align.tCov));
+    align.evalue = computeEvalue(covScore, hitsPerQuery);
     if (align.evalue > par.evalThr) {
         return -1;
     }
@@ -93,8 +91,12 @@ static int doTeaAlign(TeaSmithWaterman &teaSW,
         seqId = Util::computeSeqId(par.seqIdMode, align.identicalAACnt, querySeqLen, targetSeqLen, alnLength);
     }
 
-    int bitScore = static_cast<int>((COMBINED_LAMBDA * align.score1 - COMBINED_LOG_K) / log(2.0) + 0.5);
-    align.evalue = computeEvalue(align.score1, hitsPerQuery);
+    // Store raw alignment score directly (no bit score conversion)
+    int bitScore = static_cast<int>(align.score1);
+    // E-value from coverage-weighted score (sqrt coverage)
+    float finalCov = std::min(align.qCov, align.tCov);
+    double finalCovScore = align.score1 * sqrt(finalCov);
+    align.evalue = computeEvalue(finalCovScore, hitsPerQuery);
 
     res = Matcher::result_t(tSeqAA.getDbKey(), bitScore, align.qCov, align.tCov, seqId, align.evalue,
                             alnLength, align.qStartPos1, align.qEndPos1, querySeqLen,
@@ -151,14 +153,14 @@ int teaalign(int argc, const char **argv, const Command &command) {
     DBWriter dbw(par.db4.c_str(), par.db4Index.c_str(), static_cast<unsigned int>(par.threads), par.compressed, dbtype);
     dbw.open();
 
-    // TEA substitution matrix (from --tea-mat)
+    // MATCHA substitution matrix
     if (par.teaMatrixFile.empty()) {
-        Debug(Debug::ERROR) << "TEA substitution matrix (--tea-mat) is required for teaalign\n";
+        Debug(Debug::ERROR) << "MATCHA substitution matrix (--matcha) is required\n";
         EXIT(EXIT_FAILURE);
     }
     SubstitutionMatrix subMatTea(par.teaMatrixFile.c_str(), 1.0, par.scoreBias);
 
-    // AA substitution matrix (from --sub-mat, weighted by --tea-weight)
+    // AA substitution matrix (from --sub-mat, weighted by --aa-weight)
     float aaFactor = par.teaWeight;
     SubstitutionMatrix subMatAA(par.scoringMatrixFile.values.aminoacid().c_str(), aaFactor, par.scoreBias);
 
@@ -180,9 +182,21 @@ int teaalign(int argc, const char **argv, const Command &command) {
         }
     }
 
-    // Estimate H/Q (hits per query) for log-linear E-value computation.
-    // Use max-seqs as proxy since most queries will report close to max-seqs hits.
-    double hitsPerQuery = static_cast<double>(par.maxResListLen);
+    // Compute actual H/Q (hits per query) from prefilter results for E-value computation.
+    size_t totalPrefilterHits = 0;
+    size_t totalQueries = 0;
+    for (size_t id = 0; id < resultReader.getSize(); id++) {
+        char *data = resultReader.getData(id, 0);
+        if (*data != '\0') {
+            totalQueries++;
+            while (*data != '\0') {
+                data = Util::skipLine(data);
+                totalPrefilterHits++;
+            }
+        }
+    }
+    double hitsPerQuery = (totalQueries > 0) ? static_cast<double>(totalPrefilterHits) / static_cast<double>(totalQueries) : 500.0;
+    Debug(Debug::INFO) << "H/Q (hits per query) = " << hitsPerQuery << " (" << totalPrefilterHits << " / " << totalQueries << ")\n";
 
 #pragma omp parallel
     {
@@ -260,7 +274,13 @@ int teaalign(int argc, const char **argv, const Command &command) {
             }
 
             if (alignmentResult.size() > 1) {
-                SORT_SERIAL(alignmentResult.begin(), alignmentResult.end(), Matcher::compareHits);
+                // Sort by E-value ascending (= covScore descending)
+                SORT_SERIAL(alignmentResult.begin(), alignmentResult.end(),
+                    [](const Matcher::result_t &a, const Matcher::result_t &b) {
+                        if (a.eval != b.eval) return a.eval < b.eval;
+                        if (a.score != b.score) return a.score > b.score;
+                        return a.dbKey < b.dbKey;
+                    });
             }
             for (size_t result = 0; result < alignmentResult.size(); result++) {
                 size_t len = Matcher::resultToBuffer(buffer, alignmentResult[result], par.addBacktrace);
