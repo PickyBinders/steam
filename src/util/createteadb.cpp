@@ -5,6 +5,18 @@
 #include "KSeqWrapper.h"
 #include "LocalParameters.h"
 
+#include <string>
+
+// Strip tea_convert entropy suffix ("|H=0.123") from header name
+static std::string stripEntropySuffix(const char *name, size_t len) {
+    std::string s(name, len);
+    size_t pos = s.find("|H=");
+    if (pos != std::string::npos) {
+        s.erase(pos);
+    }
+    return s;
+}
+
 int createteadb(int argc, const char **argv, const Command &command) {
     LocalParameters &par = LocalParameters::getLocalInstance();
     par.parseParameters(argc, argv, command, false, 0, 0);
@@ -39,6 +51,7 @@ int createteadb(int argc, const char **argv, const Command &command) {
     KSeqWrapper *aaReader = KSeqFactory(aaFastaFile.c_str());
 
     unsigned int id = par.identifierOffset;
+    unsigned int skipped = 0;
     Debug::Progress progress;
 
     while (teaReader->ReadEntry()) {
@@ -51,18 +64,26 @@ int createteadb(int argc, const char **argv, const Command &command) {
         const KSeqWrapper::KSeqEntry &teaEntry = teaReader->entry;
         const KSeqWrapper::KSeqEntry &aaEntry = aaReader->entry;
 
-        // Validate same length
-        size_t teaLen = teaEntry.sequence.l;
-        size_t aaLen = aaEntry.sequence.l;
-        if (teaLen != aaLen) {
-            Debug(Debug::ERROR) << "Length mismatch at entry " << id
-                                << " (TEA header: " << teaEntry.name.s
-                                << ", AA header: " << aaEntry.name.s
-                                << "): TEA=" << teaLen << " AA=" << aaLen << "\n";
+        std::string teaName = stripEntropySuffix(teaEntry.name.s, teaEntry.name.l);
+        std::string aaName(aaEntry.name.s, aaEntry.name.l);
+
+        if (teaName != aaName) {
+            Debug(Debug::ERROR) << "Header mismatch at entry " << id
+                                << ": TEA=" << teaName << " AA=" << aaName
+                                << ". TEA and AA FASTA must be in the same order.\n";
             EXIT(EXIT_FAILURE);
         }
 
-        // Write TEA sequence (as-is, will be interpreted as amino acid characters by submat)
+        size_t teaLen = teaEntry.sequence.l;
+        size_t aaLen = aaEntry.sequence.l;
+        if (teaLen != aaLen) {
+            Debug(Debug::WARNING) << "Length mismatch for " << teaName
+                                  << ": TEA=" << teaLen << " AA=" << aaLen << ", skipping\n";
+            skipped++;
+            continue;
+        }
+
+        // Write TEA sequence
         std::string teaSeq(teaEntry.sequence.s, teaLen);
         teaSeq.push_back('\n');
         teaWriter.writeData(teaSeq.c_str(), teaSeq.length(), id, 0);
@@ -72,8 +93,8 @@ int createteadb(int argc, const char **argv, const Command &command) {
         aaSeq.push_back('\n');
         aaWriter.writeData(aaSeq.c_str(), aaSeq.length(), id, 0);
 
-        // Write header (use TEA header)
-        std::string header(teaEntry.name.s, teaEntry.name.l);
+        // Write header (use stripped TEA name)
+        std::string header = teaName;
         if (teaEntry.comment.l > 0) {
             header.append(" ");
             header.append(teaEntry.comment.s, teaEntry.comment.l);
@@ -88,13 +109,17 @@ int createteadb(int argc, const char **argv, const Command &command) {
         id++;
     }
 
-    // Check AA FASTA doesn't have more entries
     if (aaReader->ReadEntry()) {
         Debug(Debug::ERROR) << "AA FASTA has more entries than TEA FASTA\n";
         EXIT(EXIT_FAILURE);
     }
 
-    Debug(Debug::INFO) << "Wrote " << (id - par.identifierOffset) << " TEA+AA sequence pairs\n";
+    unsigned int written = id - par.identifierOffset;
+    Debug(Debug::INFO) << "Wrote " << written << " TEA+AA sequence pairs";
+    if (skipped > 0) {
+        Debug(Debug::INFO) << " (" << skipped << " skipped due to length mismatch)";
+    }
+    Debug(Debug::INFO) << "\n";
 
     fclose(lookupFp);
     hdrWriter.close(true);
