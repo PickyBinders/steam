@@ -15,9 +15,9 @@ std::vector<Command> steamCommands = {
         {"easy-search",  easyteasearch,  &localPar.easyteasearchworkflow,  COMMAND_EASY,
                 "Sensitive homology search with combined TEA+AA scoring",
                 "# Search FASTA pairs against a database\n"
-                "steam easy-search query_tea.fa query_aa.fa target_tea.fa target_aa.fa result.m8 tmp --sub-mat matcha.out\n\n"
+                "steam easy-search query_tea.fa query_aa.fa target_tea.fa target_aa.fa result.m8 tmp\n\n"
                 "# Search FASTA pair against pre-built DB\n"
-                "steam easy-search query_tea.fa query_aa.fa targetDB result.m8 tmp --sub-mat matcha.out\n",
+                "steam easy-search query_tea.fa query_aa.fa targetDB result.m8 tmp\n",
                 "Janani Durairaj <janani.durairaj@unibas.ch>",
                 "<i:queryTeaFasta> <i:queryAAFasta> <i:targetTeaFasta> <i:targetAAFasta>|<i:targetDB> <o:alignmentFile> <tmpDir>",
                 CITATION_MMSEQS2, {{"inputFasta", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA | DbType::VARIADIC, &DbValidator::flatfile },
@@ -26,7 +26,7 @@ std::vector<Command> steamCommands = {
         {"easy-cluster",  easyteacluster,  &localPar.easyteaclusterworkflow,  COMMAND_EASY,
                 "Cluster sequences with combined TEA+AA scoring",
                 "# Cluster TEA+AA sequences\n"
-                "steam easy-cluster tea.fasta aa.fasta result tmp --sub-mat matcha.out\n",
+                "steam easy-cluster tea.fasta aa.fasta result tmp\n",
                 "Janani Durairaj <janani.durairaj@unibas.ch>",
                 "<i:teaFasta> <i:aaFasta> <o:clusterPrefix> <tmpDir>",
                 CITATION_MMSEQS2, {{"teaFasta", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA, &DbValidator::flatfile },
@@ -46,7 +46,7 @@ std::vector<Command> steamCommands = {
         // Core search/cluster workflows (DB input/output)
         {"search",       teasearch,    &localPar.teasearchworkflow,     COMMAND_MAIN,
                 "Sensitive homology search with combined TEA+AA scoring",
-                "steam search queryDB targetDB result tmp --sub-mat matcha.out\n",
+                "steam search queryDB targetDB result tmp\n",
                 "Janani Durairaj <janani.durairaj@unibas.ch>",
                 "<i:queryDB> <i:targetDB> <o:resultDB> <tmpDir>",
                 CITATION_MMSEQS2, {{"queryDB", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA, &DbValidator::sequenceDb },
@@ -55,7 +55,7 @@ std::vector<Command> steamCommands = {
                                    {"tmpDir", DbType::ACCESS_MODE_OUTPUT, DbType::NEED_DATA, &DbValidator::directory }}},
         {"cluster",      teacluster,   &localPar.teaclusterworkflow,    COMMAND_MAIN,
                 "Cluster sequences with combined TEA+AA scoring",
-                "steam cluster steamDB result tmp --sub-mat matcha.out\n",
+                "steam cluster steamDB result tmp\n",
                 "Janani Durairaj <janani.durairaj@unibas.ch>",
                 "<i:steamDB> <o:clusterDB> <tmpDir>",
                 CITATION_MMSEQS2, {{"steamDB", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA, &DbValidator::sequenceDb },
@@ -64,7 +64,7 @@ std::vector<Command> steamCommands = {
         // Ungapped diagonal rescoring
         {"tearescorediagonal", tearescorediagonal, &localPar.tearescorediagonal, COMMAND_ALIGNMENT,
                 "Rescore prefilter diagonals with TEA+AA combined ungapped scoring",
-                "steam tearescorediagonal queryDB targetDB prefiltResult rescoreResult --tea-mat matcha.out\n",
+                "steam tearescorediagonal queryDB targetDB prefiltResult rescoreResult\n",
                 "Janani Durairaj <janani.durairaj@unibas.ch>",
                 "<i:queryDB> <i:targetDB> <i:prefiltResult> <o:rescoreResult>",
                 CITATION_MMSEQS2, {{"queryDB", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA, &DbValidator::sequenceDb },
@@ -74,7 +74,7 @@ std::vector<Command> steamCommands = {
         // Alignment
         {"align",        teaalign,     &localPar.teaalign,              COMMAND_ALIGNMENT,
                 "Align with combined TEA+AA dual scoring",
-                "steam align queryDB targetDB prefiltResult alnResult --sub-mat matcha.out --tea-weight 1.4\n",
+                "steam align queryDB targetDB prefiltResult alnResult\n",
                 "Janani Durairaj <janani.durairaj@unibas.ch>",
                 "<i:queryDB> <i:targetDB> <i:prefiltResult> <o:alnResult>",
                 CITATION_MMSEQS2, {{"queryDB", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA, &DbValidator::sequenceDb },

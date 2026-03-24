@@ -88,7 +88,7 @@ int teacluster(int argc, const char **argv, const Command &command) {
     par.printParameters(command.cmd, argc, argv, *command.params);
 
     if (par.teaMatrixFile.empty()) {
-        Debug(Debug::ERROR) << "--tea-mat is required for steam cluster\n";
+        Debug(Debug::ERROR) << "--matcha is required for steam cluster\n";
         EXIT(EXIT_FAILURE);
     }
 
@@ -106,7 +106,7 @@ int teacluster(int argc, const char **argv, const Command &command) {
     CommandCaller cmd;
     cmd.addVariable("REMOVE_TMP", par.removeTmpFiles ? "TRUE" : NULL);
 
-    // Override --sub-mat with --tea-mat for prefiltering / kmermatcher / rescorediagonal
+    // Override --sub-mat with --matcha for prefiltering / kmermatcher / rescorediagonal
     par.scoringMatrixFile = MultiParam<NuclAA<std::string>>(NuclAA<std::string>(par.teaMatrixFile, par.teaMatrixFile));
 
     std::string alnParam = par.createParameterString(par.teaalign);

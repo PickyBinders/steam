@@ -5,6 +5,7 @@ set(COMPILED_RESOURCES
         easyteasearch.sh
         teacluster.sh
         easyteacluster.sh
+        matcha.out
         )
 
 set(GENERATED_OUTPUT_HEADERS "")

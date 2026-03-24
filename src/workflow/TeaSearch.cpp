@@ -17,7 +17,7 @@ int teasearch(int argc, const char **argv, const Command &command) {
     teaSearchDefault(par);
 
     if (par.teaMatrixFile.empty()) {
-        Debug(Debug::ERROR) << "--tea-mat is required for steam search\n";
+        Debug(Debug::ERROR) << "--matcha is required for steam search\n";
         EXIT(EXIT_FAILURE);
     }
 
@@ -34,7 +34,7 @@ int teasearch(int argc, const char **argv, const Command &command) {
     cmd.addVariable("RUNNER", par.runner.c_str());
     cmd.addVariable("VERBOSITY", par.createParameterString(par.onlyverbosity).c_str());
 
-    // Override --sub-mat with --tea-mat for prefiltering (TEA k-mer matching)
+    // Override --sub-mat with --matcha for prefiltering (TEA k-mer matching)
     // Use lower comp bias scale for prefilter (matching foldseek)
     auto origScoringMatrixFile = par.scoringMatrixFile;
     par.scoringMatrixFile = MultiParam<NuclAA<std::string>>(NuclAA<std::string>(par.teaMatrixFile, par.teaMatrixFile));
@@ -44,7 +44,7 @@ int teasearch(int argc, const char **argv, const Command &command) {
     // not the TEA matrix, for the amino acid scoring component
     par.scoringMatrixFile = origScoringMatrixFile;
 
-    // Rescorediagonal and alignment use --tea-mat (TEA) + --sub-mat (AA, with --tea-weight scaling)
+    // Rescorediagonal and alignment use --matcha (TEA) + --sub-mat (AA, with --aa-weight scaling)
     cmd.addVariable("RESCOREDIAGONAL_PAR", par.createParameterString(par.tearescorediagonal).c_str());
     cmd.addVariable("ALIGNMENT_PAR", par.createParameterString(par.teaalign).c_str());
 
