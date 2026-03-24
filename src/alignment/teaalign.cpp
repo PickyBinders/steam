@@ -153,12 +153,24 @@ int teaalign(int argc, const char **argv, const Command &command) {
     DBWriter dbw(par.db4.c_str(), par.db4Index.c_str(), static_cast<unsigned int>(par.threads), par.compressed, dbtype);
     dbw.open();
 
-    // MATCHA substitution matrix
+    // MATCHA substitution matrix — resolve from bundled matrices if available
     if (par.teaMatrixFile.empty()) {
         Debug(Debug::ERROR) << "MATCHA substitution matrix (--matcha) is required\n";
         EXIT(EXIT_FAILURE);
     }
-    SubstitutionMatrix subMatTea(par.teaMatrixFile.c_str(), 1.0, par.scoreBias);
+    std::string teaMatData;
+    for (size_t i = 0; i < par.substitutionMatrices.size(); i++) {
+        if (par.substitutionMatrices[i].name == par.teaMatrixFile) {
+            std::string matrixData((const char *)par.substitutionMatrices[i].subMatData,
+                                   par.substitutionMatrices[i].subMatDataLen);
+            char *serialized = BaseMatrix::serialize(par.substitutionMatrices[i].name, matrixData);
+            teaMatData.assign(serialized);
+            free(serialized);
+            break;
+        }
+    }
+    const char *teaMatSource = teaMatData.empty() ? par.teaMatrixFile.c_str() : teaMatData.c_str();
+    SubstitutionMatrix subMatTea(teaMatSource, 1.0, par.scoreBias);
 
     // AA substitution matrix (from --sub-mat, weighted by --aa-weight)
     float aaFactor = par.teaWeight;
