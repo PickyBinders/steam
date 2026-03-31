@@ -59,21 +59,28 @@ if [ "${RUN_LINCLUST}" = "1" ]; then
           || fail "kmermatcher died"
   fi
 
-  # 2. Ungapped diagonal rescoring (on TEA sequences)
-  if notExists "${TMP_PATH}/pref_rescore1.dbtype"; then
-      # shellcheck disable=SC2086
-      $RUNNER "$MMSEQS" rescorediagonal "${INPUT}" "${INPUT}" "${TMP_PATH}/pref" "${TMP_PATH}/pref_rescore1" ${RESCOREDIAGONAL_PAR} \
-          || fail "Rescore diagonal step died"
+  RESCORE_INPUT="${TMP_PATH}/pref"
+
+  # 2. TEA+AA ungapped rescoring (optional speed filter)
+  if [ -n "${RESCORE_PAR}" ]; then
+      if notExists "${TMP_PATH}/pref_rescore.dbtype"; then
+          # shellcheck disable=SC2086
+          $RUNNER "$MMSEQS" tearescorediagonal "${INPUT}" "${INPUT}" "${TMP_PATH}/pref" "${TMP_PATH}/pref_rescore" ${RESCORE_PAR} \
+              || fail "TEA ungapped rescoring step died"
+      fi
+      RESCORE_INPUT="${TMP_PATH}/pref_rescore"
   fi
 
+  # 3. Pre-clustering from ungapped scores
   if notExists "${TMP_PATH}/pre_clust.dbtype"; then
       # shellcheck disable=SC2086,SC2153
-      "$MMSEQS" clust "$INPUT" "${TMP_PATH}/pref_rescore1" "${TMP_PATH}/pre_clust" ${CLUSTER_PAR} \
+      "$MMSEQS" clust "$INPUT" "${RESCORE_INPUT}" "${TMP_PATH}/pre_clust" ${CLUSTER_PAR} \
           || fail "Pre-clustering step died"
   fi
 
   awk '{ print $1 }' "${TMP_PATH}/pre_clust.index" > "${TMP_PATH}/order_redundancy"
 
+  # 4. Filter prefilter hits to only cluster reps × members
   if notExists "${TMP_PATH}/pref_filter1.dbtype"; then
       # shellcheck disable=SC2086
       "$MMSEQS" createsubdb "${TMP_PATH}/order_redundancy" "${TMP_PATH}/pref" "${TMP_PATH}/pref_filter1" ${VERBOSITY} --subdb-mode 1 \
@@ -86,7 +93,7 @@ if [ "${RUN_LINCLUST}" = "1" ]; then
           || fail "Filterdb step died"
   fi
 
-  # 3. TEA+AA gapped alignment on filtered set
+  # 5. TEA+AA gapped alignment on filtered set only
   if notExists "${TMP_PATH}/aln.linclust.dbtype"; then
       # shellcheck disable=SC2086
       $RUNNER "$MMSEQS" align "${INPUT}" "${INPUT}" "${TMP_PATH}/pref_filter2" \
@@ -99,13 +106,14 @@ if [ "${RUN_LINCLUST}" = "1" ]; then
           || fail "Createsubdb pre_clustered_seqs step died"
   fi
 
-  # 4. Clustering using greedy set cover
+  # 6. Clustering from gapped alignment
   if notExists "${TMP_PATH}/clust.linclust.dbtype"; then
       # shellcheck disable=SC2086,SC2153
       "$MMSEQS" clust "${TMP_PATH}/pre_clustered_seqs" "${TMP_PATH}/aln.linclust" "${TMP_PATH}/clust.linclust" ${CLUSTER_PAR} \
           || fail "Clustering step died"
   fi
 
+  # 7. Merge pre-clusters with gapped clusters
   if notExists "${TMP_PATH}/clu_redundancy.dbtype"; then
       if [ "${RUN_ITERATIVE}" = "1" ]; then
         # shellcheck disable=SC2086
@@ -365,18 +373,15 @@ if [ -n "$REMOVE_TMP" ]; then
     fi
     if [ "${RUN_LINCLUST}" = "1" ]; then
       # shellcheck disable=SC2086
-      "$MMSEQS" rmdb "${TMP_PATH}/pref_filter1" ${VERBOSITY}
-      # shellcheck disable=SC2086
       "$MMSEQS" rmdb "${TMP_PATH}/pref" ${VERBOSITY}
-      # shellcheck disable=SC2086
-      "$MMSEQS" rmdb "${TMP_PATH}/pref_rescore1" ${VERBOSITY}
+      if [ -n "${RESCORE_PAR}" ]; then
+          # shellcheck disable=SC2086
+          "$MMSEQS" rmdb "${TMP_PATH}/pref_rescore" ${VERBOSITY}
+      fi
       # shellcheck disable=SC2086
       "$MMSEQS" rmdb "${TMP_PATH}/pre_clust" ${VERBOSITY}
       # shellcheck disable=SC2086
-      "$MMSEQS" rmdb "${TMP_PATH}/input_step_redundancy" ${VERBOSITY}
-      # shellcheck disable=SC2086
-      "$MMSEQS" rmdb "${TMP_PATH}/input_step_redundancy_h" ${VERBOSITY}
-      rm -f -- "${TMP_PATH}/order_redundancy"
+      "$MMSEQS" rmdb "${TMP_PATH}/pref_filter1" ${VERBOSITY}
       # shellcheck disable=SC2086
       "$MMSEQS" rmdb "${TMP_PATH}/pref_filter2" ${VERBOSITY}
       # shellcheck disable=SC2086
@@ -385,6 +390,7 @@ if [ -n "$REMOVE_TMP" ]; then
       "$MMSEQS" rmdb "${TMP_PATH}/clust.linclust" ${VERBOSITY}
       # shellcheck disable=SC2086
       "$MMSEQS" rmdb "${TMP_PATH}/pre_clustered_seqs" ${VERBOSITY}
+      rm -f -- "${TMP_PATH}/order_redundancy"
     fi
     rm -f "${TMP_PATH}/clustering.sh"
 fi

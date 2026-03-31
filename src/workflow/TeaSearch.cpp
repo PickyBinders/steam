@@ -44,8 +44,15 @@ int teasearch(int argc, const char **argv, const Command &command) {
     // not the TEA matrix, for the amino acid scoring component
     par.scoringMatrixFile = origScoringMatrixFile;
 
-    // Rescorediagonal and alignment use --matcha (TEA) + --sub-mat (AA, with --aa-weight scaling)
-    cmd.addVariable("RESCOREDIAGONAL_PAR", par.createParameterString(par.tearescorediagonal).c_str());
+    // Ungapped rescoring: skip entirely if --min-ungapped-score 0
+    if (par.minUngappedScore > 0) {
+        double origEvalThr = par.evalThr;
+        par.evalThr = 100000.0;
+        cmd.addVariable("RESCORE_PAR", par.createParameterString(par.tearescorediagonal).c_str());
+        par.evalThr = origEvalThr;
+    }
+
+    // Gapped alignment uses the user's E-value threshold
     cmd.addVariable("ALIGNMENT_PAR", par.createParameterString(par.teaalign).c_str());
 
     std::string program(tmpDir + "/teasearch.sh");

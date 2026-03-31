@@ -12,11 +12,17 @@ LocalParameters::LocalParameters() :
                       "Path to MATCHA substitution matrix file",
                       typeid(std::string), (void *) &teaMatrixFile,
                       "",
-                      MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_PREFILTER | MMseqsParameter::COMMAND_EXPERT)
+                      MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_PREFILTER | MMseqsParameter::COMMAND_EXPERT),
+        PARAM_MIN_UNGAPPED_SCORE(PARAM_MIN_UNGAPPED_SCORE_ID, "--min-ungapped-score", "Min ungapped score",
+                                 "Minimum TEA+AA ungapped alignment score to pass to gapped alignment [0,INT_MAX]",
+                                 typeid(int), (void *) &minUngappedScore,
+                                 "^[0-9]+$",
+                                 MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT)
 {
     // Defaults
     teaWeight = 1.4;
     teaMatrixFile = "matcha.out";
+    minUngappedScore = 10;
     // Register matcha.out as a bundled substitution matrix
     substitutionMatrices.push_back({"matcha.out", matcha_out, matcha_out_len});
     compBiasCorrection = 0;
@@ -40,7 +46,7 @@ LocalParameters::LocalParameters() :
     teaalign = combineList(align, {&PARAM_TEA_WEIGHT, &PARAM_TEA_MAT});
 
     // tearescorediagonal = align + TEA-specific params (for ungapped diagonal rescoring)
-    tearescorediagonal = combineList(align, {&PARAM_TEA_WEIGHT, &PARAM_TEA_MAT});
+    tearescorediagonal = combineList(align, {&PARAM_TEA_WEIGHT, &PARAM_TEA_MAT, &PARAM_MIN_UNGAPPED_SCORE});
 
     // teasearch = prefilter + teaalign + tearescorediagonal + common
     teasearchworkflow = combineList(prefilter, teaalign);
@@ -51,9 +57,9 @@ LocalParameters::LocalParameters() :
     easyteasearchworkflow = combineList(teasearchworkflow, createteadb);
     easyteasearchworkflow = combineList(easyteasearchworkflow, convertalignments);
 
-    // teacluster = prefilter + teaalign + rescorediagonal + clust + linclust + common
+    // teacluster = prefilter + teaalign + tearescorediagonal + clust + linclust + common
     teaclusterworkflow = combineList(prefilter, teaalign);
-    teaclusterworkflow = combineList(teaclusterworkflow, rescorediagonal);
+    teaclusterworkflow = combineList(teaclusterworkflow, tearescorediagonal);
     teaclusterworkflow = combineList(teaclusterworkflow, clust);
     teaclusterworkflow.push_back(&PARAM_CASCADED);
     teaclusterworkflow.push_back(&PARAM_CLUSTER_STEPS);

@@ -272,6 +272,16 @@ int tearescorediagonal(int argc, const char **argv, const Command &command) {
                         continue;
                     }
 
+                    // Min ungapped covScore filter (speed filter before gapped alignment)
+                    // covScore = raw * sqrt(min(qcov, tcov))
+                    {
+                        double covScore = res.score * sqrt(std::min(res.qcov, res.dbcov));
+                        if (covScore < par.minUngappedScore && !isIdentity) {
+                            rejected++;
+                            continue;
+                        }
+                    }
+
                     if (Alignment::checkCriteria(res, isIdentity, par.evalThr, par.seqIdThr, par.alnLenThr, par.covMode, par.covThr)) {
                         alignmentResult.emplace_back(res);
                         passedNum++;

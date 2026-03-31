@@ -23,9 +23,11 @@ public:
     // TEA-specific parameters
     float teaWeight;
     std::string teaMatrixFile;
+    int minUngappedScore;
 
     PARAMETER(PARAM_TEA_WEIGHT)
     PARAMETER(PARAM_TEA_MAT)
+    PARAMETER(PARAM_MIN_UNGAPPED_SCORE)
 
     // Parameter vectors for TEA commands
     std::vector<MMseqsParameter*> createteadb;

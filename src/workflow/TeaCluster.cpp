@@ -116,10 +116,22 @@ int teacluster(int argc, const char **argv, const Command &command) {
     cmd.addVariable("VERBOSITY", par.createParameterString(par.onlyverbosity).c_str());
     cmd.addVariable("VERBOSITYANDCOMPRESS", par.createParameterString(par.threadsandcompression).c_str());
 
-    // Linclust parameters
     par.includeIdentity = true;
-    cmd.addVariable("RESCOREDIAGONAL_PAR", par.createParameterString(par.rescorediagonal).c_str());
+    int origKmerSize = par.kmerSize;
+    std::string origSpacedPattern = par.spacedKmerPattern;
+    par.kmerSize = 0;
+    par.spacedKmerPattern = "";  // contiguous k-mers for linclust
     cmd.addVariable("KMERMATCHER_PAR", par.createParameterString(par.kmermatcher).c_str());
+    par.kmerSize = origKmerSize;
+    par.spacedKmerPattern = origSpacedPattern;
+
+    // Ungapped rescoring: skip entirely if --min-ungapped-score 0
+    if (par.minUngappedScore > 0) {
+        double origEvalThr = par.evalThr;
+        par.evalThr = 100000.0;
+        cmd.addVariable("RESCORE_PAR", par.createParameterString(par.tearescorediagonal).c_str());
+        par.evalThr = origEvalThr;
+    }
 
     cmd.addVariable("CLUSTER_PAR", par.createParameterString(par.clust).c_str());
     cmd.addVariable("ALIGNMENT_PAR", alnParam.c_str());
