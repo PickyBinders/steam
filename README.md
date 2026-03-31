@@ -37,6 +37,10 @@ Clustering follows the MMseqs2/Foldseek cascaded approach:
 ## Installation
 
 ```bash
+# Install build dependencies (if needed)
+mamba install -c conda-forge cmake gxx_linux-64
+
+# Build
 git clone --recursive https://github.com/PickyBinders/steam.git
 cd steam
 mkdir build && cd build
