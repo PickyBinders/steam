@@ -28,6 +28,7 @@ LocalParameters::LocalParameters() :
     compBiasCorrection = 0;
     compBiasCorrectionScale = 0.5;
     maskMode = 0;
+    exactKmerMatching = 1;
     gapOpen = MultiParam<NuclAA<int>>(NuclAA<int>(14, 5));
     gapExtend = MultiParam<NuclAA<int>>(NuclAA<int>(2, 2));
     maxResListLen = 2000;
