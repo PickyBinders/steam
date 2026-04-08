@@ -17,13 +17,10 @@
 #endif
 
 // Log-linear E-value model following Edgar & Sahakyan (2025).
-// E(s) = (H/Q) * 10^(m*s + c), where s = raw * min(qcov, tcov).
-// See evalue_calibration/17_sweep_features.py.
-static const double LOGLINEAR_M_LN = -0.017364 * 2.302585093;
-static const double LOGLINEAR_C_LN = -0.7636 * 2.302585093;
-
-static double computeEvalue(double score, double hitsPerQuery) {
-    return hitsPerQuery * exp(LOGLINEAR_M_LN * score + LOGLINEAR_C_LN);
+// E(s) = P(FP) * (H/Q) * 10^(m*s + c), where s = raw alignment score.
+// Parameters configurable via --loglinear-m, --loglinear-c, --p-fp.
+static double computeEvalue(double rawScore, double hitsPerQuery, double m_ln, double c_ln, double pfp) {
+    return pfp * hitsPerQuery * exp(m_ln * rawScore + c_ln);
 }
 
 template<typename T>
@@ -58,7 +55,7 @@ static Matcher::result_t ungappedAlignTea(Sequence &qSeqAA, Sequence &qSeqTea,
                                            Sequence &tSeqAA, Sequence &tSeqTea,
                                            int diagonal, SubstitutionMatrix &subMatAA,
                                            SubstitutionMatrix &subMatTea,
-                                           double hitsPerQuery,
+                                           double hitsPerQuery, double m_ln, double c_ln, double pfp,
                                            std::string &backtrace, const Parameters &par) {
     DistanceCalculator::LocalAlignment res;
     float seqId = 0.0;
@@ -117,9 +114,7 @@ static Matcher::result_t ungappedAlignTea(Sequence &qSeqAA, Sequence &qSeqTea,
     float queryCov = (std::min((unsigned int)qSeqAA.L, (unsigned int)qEndPos) - (unsigned int)qStartPos + 1) / (float)qSeqAA.L;
     float targetCov = (std::min((unsigned int)tSeqAA.L, (unsigned int)dbEndPos) - (unsigned int)dbStartPos + 1) / (float)tSeqAA.L;
 
-    // Coverage-weighted score for E-value (sqrt coverage)
-    double covScore = res.score * sqrt(std::min(queryCov, targetCov));
-    double evalue = computeEvalue(covScore, hitsPerQuery);
+    double evalue = computeEvalue(res.score, hitsPerQuery, m_ln, c_ln, pfp);
 
     bool hasLowerCoverage = !(Util::hasCoverage(par.covThr, par.covMode, queryCov, targetCov));
     if (hasLowerCoverage) {
@@ -208,6 +203,11 @@ int tearescorediagonal(int argc, const char **argv, const Command &command) {
 
     double hitsPerQuery = static_cast<double>(par.maxResListLen);
 
+    // E-value parameters (configurable via --loglinear-m, --loglinear-c, --p-fp)
+    const double loglinearM_ln = par.loglinearM * 2.302585093;
+    const double loglinearC_ln = par.loglinearC * 2.302585093;
+    const double pfp = par.pFP;
+
 #pragma omp parallel
     {
         unsigned int thread_idx = 0;
@@ -265,6 +265,7 @@ int tearescorediagonal(int argc, const char **argv, const Command &command) {
                                                               tSeqAA, tSeqTea,
                                                               static_cast<short>(prefHit.diagonal),
                                                               subMatAA, subMatTea, hitsPerQuery,
+                                                              loglinearM_ln, loglinearC_ln, pfp,
                                                               backtrace, par);
 
                     if (res.dbKey == UINT_MAX) {
@@ -272,15 +273,6 @@ int tearescorediagonal(int argc, const char **argv, const Command &command) {
                         continue;
                     }
 
-                    // Min ungapped covScore filter (speed filter before gapped alignment)
-                    // covScore = raw * sqrt(min(qcov, tcov))
-                    {
-                        double covScore = res.score * sqrt(std::min(res.qcov, res.dbcov));
-                        if (covScore < par.minUngappedScore && !isIdentity) {
-                            rejected++;
-                            continue;
-                        }
-                    }
 
                     if (Alignment::checkCriteria(res, isIdentity, par.evalThr, par.seqIdThr, par.alnLenThr, par.covMode, par.covThr)) {
                         alignmentResult.emplace_back(res);

@@ -18,27 +18,17 @@
 #endif
 
 // Log-linear E-value model following Edgar & Sahakyan (2025).
-// E(s) = (H/Q) * 10^(m*s + c)
-// where s = raw_score * sqrt(min(qcov, tcov)) (coverage-weighted score),
-// H/Q = total reported hits / number of queries.
-// Parameters fitted on SCOP40 FP distribution (diff fold) with P(reported) correction.
-// Fitted for: raw*sqrt(cov) scoring, tea-weight=1.4, gap-open=14, gap-extend=2, max-seqs=2000,
-// k=6, spaced pattern 110101101.
-// Fitted on SCOP40c (Edgar's curated subset), FPEPQ range 0.1-10.
-// See bench_scop40c/03_fit_and_evaluate.py.
-static const double LOGLINEAR_M = -0.017364;
-static const double LOGLINEAR_C = -0.7636;
-static const double LOGLINEAR_M_LN = -0.017364 * 2.302585093;
-static const double LOGLINEAR_C_LN = -0.7636 * 2.302585093;
-
-static double computeEvalue(double score, double hitsPerQuery) {
-    return hitsPerQuery * exp(LOGLINEAR_M_LN * score + LOGLINEAR_C_LN);
+// E(s) = P(FP) * (H/Q) * 10^(m*s + c)
+// where s = raw alignment score, H/Q = total reported hits / number of queries.
+// m, c, P(FP) are configurable via --loglinear-m, --loglinear-c, --p-fp.
+static double computeEvalue(double rawScore, double hitsPerQuery, double m_ln, double c_ln, double pfp) {
+    return pfp * hitsPerQuery * exp(m_ln * rawScore + c_ln);
 }
 
 static int doTeaAlign(TeaSmithWaterman &teaSW,
                       Sequence &tSeqAA, Sequence &tSeqTea,
                       unsigned int querySeqLen, unsigned int targetSeqLen,
-                      double hitsPerQuery,
+                      double hitsPerQuery, double m_ln, double c_ln, double pfp,
                       Matcher::result_t &res, std::string &backtrace,
                       const Parameters &par) {
     float seqId = 0.0;
@@ -55,9 +45,7 @@ static int doTeaAlign(TeaSmithWaterman &teaSW,
         return -1;
     }
 
-    // Coverage-weighted score for E-value computation and ranking
-    double covScore = align.score1 * sqrt(std::min(align.qCov, align.tCov));
-    align.evalue = computeEvalue(covScore, hitsPerQuery);
+    align.evalue = computeEvalue(align.score1, hitsPerQuery, m_ln, c_ln, pfp);
     if (align.evalue > par.evalThr) {
         return -1;
     }
@@ -91,12 +79,8 @@ static int doTeaAlign(TeaSmithWaterman &teaSW,
         seqId = Util::computeSeqId(par.seqIdMode, align.identicalAACnt, querySeqLen, targetSeqLen, alnLength);
     }
 
-    // Store raw alignment score directly (no bit score conversion)
     int bitScore = static_cast<int>(align.score1);
-    // E-value from coverage-weighted score (sqrt coverage)
-    float finalCov = std::min(align.qCov, align.tCov);
-    double finalCovScore = align.score1 * sqrt(finalCov);
-    align.evalue = computeEvalue(finalCovScore, hitsPerQuery);
+    align.evalue = computeEvalue(align.score1, hitsPerQuery, m_ln, c_ln, pfp);
 
     res = Matcher::result_t(tSeqAA.getDbKey(), bitScore, align.qCov, align.tCov, seqId, align.evalue,
                             alnLength, align.qStartPos1, align.qEndPos1, querySeqLen,
@@ -210,6 +194,12 @@ int teaalign(int argc, const char **argv, const Command &command) {
     double hitsPerQuery = (totalQueries > 0) ? static_cast<double>(totalPrefilterHits) / static_cast<double>(totalQueries) : 500.0;
     Debug(Debug::INFO) << "H/Q (hits per query) = " << hitsPerQuery << " (" << totalPrefilterHits << " / " << totalQueries << ")\n";
 
+    // E-value parameters (configurable via --loglinear-m, --loglinear-c, --p-fp)
+    const double loglinearM_ln = par.loglinearM * 2.302585093;  // convert log10 to ln
+    const double loglinearC_ln = par.loglinearC * 2.302585093;
+    const double pfp = par.pFP;
+    Debug(Debug::INFO) << "E-value params: m=" << par.loglinearM << " c=" << par.loglinearC << " P(FP)=" << pfp << "\n";
+
 #pragma omp parallel
     {
         unsigned int thread_idx = 0;
@@ -270,7 +260,8 @@ int teaalign(int argc, const char **argv, const Command &command) {
 
                     Matcher::result_t res;
                     if (doTeaAlign(teaSW, tSeqAA, tSeqTea, querySeqLen, targetSeqLen,
-                                   hitsPerQuery, res, backtrace, par) == -1) {
+                                   hitsPerQuery, loglinearM_ln, loglinearC_ln, pfp,
+                                   res, backtrace, par) == -1) {
                         rejected++;
                         continue;
                     }
@@ -286,7 +277,7 @@ int teaalign(int argc, const char **argv, const Command &command) {
             }
 
             if (alignmentResult.size() > 1) {
-                // Sort by E-value ascending (= covScore descending)
+                // Sort by E-value ascending (= raw score descending)
                 SORT_SERIAL(alignmentResult.begin(), alignmentResult.end(),
                     [](const Matcher::result_t &a, const Matcher::result_t &b) {
                         if (a.eval != b.eval) return a.eval < b.eval;

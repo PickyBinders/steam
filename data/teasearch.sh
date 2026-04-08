@@ -8,16 +8,22 @@ notExists() {
 	[ ! -f "$1" ]
 }
 
-# 1. Prefilter (k-mer matching on TEA sequences)
+# 1. Prefilter (k-mer matching on TEA sequences) or exhaustive all-pairs
 if notExists "${TMP_PATH}/pref.dbtype"; then
-    # shellcheck disable=SC2086
-    $RUNNER "$MMSEQS" prefilter "${QUERY}" "${TARGET}${INDEXEXT}" "${TMP_PATH}/pref" ${PREFILTER_PAR} \
-        || fail "Prefilter step died"
+    if [ -n "${EXHAUSTIVE}" ]; then
+        # shellcheck disable=SC2086
+        $RUNNER "$MMSEQS" prefilter "${QUERY}" "${TARGET}${INDEXEXT}" "${TMP_PATH}/pref" ${EXHAUSTIVE_PREFILTER_PAR} \
+            || fail "Exhaustive prefilter step died"
+    else
+        # shellcheck disable=SC2086
+        $RUNNER "$MMSEQS" prefilter "${QUERY}" "${TARGET}${INDEXEXT}" "${TMP_PATH}/pref" ${PREFILTER_PAR} \
+            || fail "Prefilter step died"
+    fi
 fi
 
 ALIGN_INPUT="${TMP_PATH}/pref"
 
-# 2. Ungapped TEA+AA rescoring (optional speed filter)
+# 2. Ungapped TEA+AA rescoring (optional speed filter, disabled by default)
 if [ -n "${RESCORE_PAR}" ]; then
     if notExists "${TMP_PATH}/pref_rescore.dbtype"; then
         # shellcheck disable=SC2086

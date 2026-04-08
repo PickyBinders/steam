@@ -125,13 +125,7 @@ int teacluster(int argc, const char **argv, const Command &command) {
     par.kmerSize = origKmerSize;
     par.spacedKmerPattern = origSpacedPattern;
 
-    // Ungapped rescoring: skip entirely if --min-ungapped-score 0
-    if (par.minUngappedScore > 0) {
-        double origEvalThr = par.evalThr;
-        par.evalThr = 100000.0;
-        cmd.addVariable("RESCORE_PAR", par.createParameterString(par.tearescorediagonal).c_str());
-        par.evalThr = origEvalThr;
-    }
+
 
     cmd.addVariable("CLUSTER_PAR", par.createParameterString(par.clust).c_str());
     cmd.addVariable("ALIGNMENT_PAR", alnParam.c_str());

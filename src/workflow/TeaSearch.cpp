@@ -30,6 +30,7 @@ int teasearch(int argc, const char **argv, const Command &command) {
     cmd.addVariable("TMP_PATH", tmpDir.c_str());
     cmd.addVariable("RESULTS", par.filenames.back().c_str());
     cmd.addVariable("REMOVE_TMP", par.removeTmpFiles ? "TRUE" : NULL);
+    cmd.addVariable("EXHAUSTIVE", par.exhaustiveSearch ? "TRUE" : NULL);
 
     cmd.addVariable("RUNNER", par.runner.c_str());
     cmd.addVariable("VERBOSITY", par.createParameterString(par.onlyverbosity).c_str());
@@ -40,17 +41,21 @@ int teasearch(int argc, const char **argv, const Command &command) {
     par.scoringMatrixFile = MultiParam<NuclAA<std::string>>(NuclAA<std::string>(par.teaMatrixFile, par.teaMatrixFile));
     cmd.addVariable("PREFILTER_PAR", par.createParameterString(par.prefilter).c_str());
 
+    // Exhaustive prefilter: disable diagonal scoring, lower k, max sensitivity
+    if (par.exhaustiveSearch) {
+        par.diagonalScoring = 0;
+        par.minDiagScoreThr = 0;
+        par.kmerSize = 5;
+        par.spacedKmer = 0;
+        par.spacedKmerPattern = "";
+        par.sensitivity = 7.5;
+        par.maxResListLen = 100000;
+        cmd.addVariable("EXHAUSTIVE_PREFILTER_PAR", par.createParameterString(par.prefilter).c_str());
+    }
+
     // Restore original --sub-mat so rescorediagonal and alignment use the AA matrix (e.g. BLOSUM62),
     // not the TEA matrix, for the amino acid scoring component
     par.scoringMatrixFile = origScoringMatrixFile;
-
-    // Ungapped rescoring: skip entirely if --min-ungapped-score 0
-    if (par.minUngappedScore > 0) {
-        double origEvalThr = par.evalThr;
-        par.evalThr = 100000.0;
-        cmd.addVariable("RESCORE_PAR", par.createParameterString(par.tearescorediagonal).c_str());
-        par.evalThr = origEvalThr;
-    }
 
     // Gapped alignment uses the user's E-value threshold
     cmd.addVariable("ALIGNMENT_PAR", par.createParameterString(par.teaalign).c_str());

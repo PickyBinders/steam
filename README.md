@@ -9,9 +9,8 @@ STEAM uses paired representations for each protein: a TEA sequence encoding stru
 ### Search pipeline
 
 1. **Prefiltering**: Fast k-mer matching on TEA sequences (k=6, spaced pattern) to find candidate pairs
-2. **Ungapped rescoring**: TEA+AA ungapped diagonal alignment filters low-scoring hits (coverage-weighted score threshold, default 10). Disable with `--min-ungapped-score 0`.
-3. **Gapped alignment**: Smith-Waterman alignment with combined TEA+AA scoring
-4. **E-value estimation**: Log-linear statistical model calibrated on SCOP structural classification
+2. **Gapped alignment**: Smith-Waterman alignment with combined TEA+AA scoring
+3. **E-value estimation**: Log-linear statistical model calibrated on SCOP structural classification
 
 ### Clustering pipeline
 
@@ -122,7 +121,10 @@ The `createdb` command reads TEA and AA FASTA files in lockstep -- headers must 
 | `--gap-extend` | 2 | Gap extension penalty |
 | `-k` | 6 | k-mer length for prefiltering |
 | `--exact-kmer-matching` | 1 | Use exact k-mer matching |
-| `--min-ungapped-score` | 10 | Minimum ungapped covScore to pass to gapped alignment (0 = disable) |
+| `--loglinear-m` | -0.0183 | Slope for log-linear E-value model |
+| `--loglinear-c` | 0.032 | Intercept for log-linear E-value model |
+| `--p-fp` | 1.0 | P(FP) prior for E-value computation |
+| `--exhaustive-search` | false | Exhaustive all-vs-all search (slow, for benchmarking) |
 
 ### Clustering
 
@@ -170,8 +172,6 @@ The alignment score at each position is the sum of:
 - **MATCHA score**: substitution score from the TEA alphabet matrix
 - **AA score**: BLOSUM62 substitution score, weighted by `--aa-weight` (default 1.4)
 
-Results are ranked by a coverage-weighted score: `raw_score * sqrt(min(query_coverage, target_coverage))`. This penalizes partial alignments that only match a small fragment while preserving sensitivity for full-domain matches.
-
 ## E-value computation
 
 STEAM uses a log-linear E-value model following [Edgar & Sahakyan (2025)](https://doi.org/10.1101/2025.07.17.665375), which accounts for the heavy-tailed false positive score distribution observed in structural alphabet searches. E-values are computed as:
@@ -180,4 +180,4 @@ STEAM uses a log-linear E-value model following [Edgar & Sahakyan (2025)](https:
 E(s) = (H/Q) * 10^(m*s + c)
 ```
 
-where `s` is the coverage-weighted alignment score, `H/Q` is the average number of reported hits per query (computed at runtime from prefilter results), and `m` and `c` are parameters fitted on SCOP40c. Unlike traditional Karlin-Altschul E-values, this model does not assume a Gumbel distribution.
+where `s` is the raw alignment score, `H/Q` is the average number of reported hits per query (computed at runtime from prefilter results), and `m` and `c` are parameters fitted on SCOP40c.

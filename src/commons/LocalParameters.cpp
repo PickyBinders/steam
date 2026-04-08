@@ -13,16 +13,28 @@ LocalParameters::LocalParameters() :
                       typeid(std::string), (void *) &teaMatrixFile,
                       "",
                       MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_PREFILTER | MMseqsParameter::COMMAND_EXPERT),
-        PARAM_MIN_UNGAPPED_SCORE(PARAM_MIN_UNGAPPED_SCORE_ID, "--min-ungapped-score", "Min ungapped score",
-                                 "Minimum TEA+AA ungapped alignment score to pass to gapped alignment [0,INT_MAX]",
-                                 typeid(int), (void *) &minUngappedScore,
-                                 "^[0-9]+$",
-                                 MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT)
+        PARAM_LOGLINEAR_M(PARAM_LOGLINEAR_M_ID, "--loglinear-m", "Log-linear slope",
+                          "Slope parameter m for log-linear E-value model: E = P(FP) * (H/Q) * 10^(m*s+c)",
+                          typeid(float), (void *) &loglinearM,
+                          "^-?[0-9]*(\\.[0-9]+)?$",
+                          MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
+        PARAM_LOGLINEAR_C(PARAM_LOGLINEAR_C_ID, "--loglinear-c", "Log-linear intercept",
+                          "Intercept parameter c for log-linear E-value model: E = P(FP) * (H/Q) * 10^(m*s+c)",
+                          typeid(float), (void *) &loglinearC,
+                          "^-?[0-9]*(\\.[0-9]+)?$",
+                          MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
+        PARAM_P_FP(PARAM_P_FP_ID, "--p-fp", "P(FP) prior",
+                   "Prior probability that a reported hit is a false positive (0.5 = filtered, 1.0 = unfiltered)",
+                   typeid(float), (void *) &pFP,
+                   "^[0-9]*(\\.[0-9]+)?$",
+                   MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT)
 {
     // Defaults
     teaWeight = 1.4;
     teaMatrixFile = "matcha.out";
-    minUngappedScore = 10;
+    loglinearM = -0.0182549591;
+    loglinearC = 0.03214628;
+    pFP = 1.0;
     // Register matcha.out as a bundled substitution matrix
     substitutionMatrices.push_back({"matcha.out", matcha_out, matcha_out_len});
     compBiasCorrection = 0;
@@ -43,16 +55,17 @@ LocalParameters::LocalParameters() :
     createteadb.push_back(&PARAM_THREADS);
     createteadb.push_back(&PARAM_V);
 
-    // teaalign = align + TEA-specific params
-    teaalign = combineList(align, {&PARAM_TEA_WEIGHT, &PARAM_TEA_MAT});
+    // teaalign = align + TEA-specific params + E-value params
+    teaalign = combineList(align, {&PARAM_TEA_WEIGHT, &PARAM_TEA_MAT,
+                                    &PARAM_LOGLINEAR_M, &PARAM_LOGLINEAR_C, &PARAM_P_FP});
 
     // tearescorediagonal = align + TEA-specific params (for ungapped diagonal rescoring)
-    tearescorediagonal = combineList(align, {&PARAM_TEA_WEIGHT, &PARAM_TEA_MAT, &PARAM_MIN_UNGAPPED_SCORE});
+    tearescorediagonal = combineList(align, {&PARAM_TEA_WEIGHT, &PARAM_TEA_MAT});
 
     // teasearch = prefilter + teaalign + tearescorediagonal + common
     teasearchworkflow = combineList(prefilter, teaalign);
     teasearchworkflow = combineList(teasearchworkflow, tearescorediagonal);
-    teasearchworkflow = combineList(teasearchworkflow, {&PARAM_RUNNER, &PARAM_REUSELATEST});
+    teasearchworkflow = combineList(teasearchworkflow, {&PARAM_RUNNER, &PARAM_REUSELATEST, &PARAM_EXHAUSTIVE_SEARCH});
 
     // easyteasearch = teasearch + createteadb + convertalis
     easyteasearchworkflow = combineList(teasearchworkflow, createteadb);

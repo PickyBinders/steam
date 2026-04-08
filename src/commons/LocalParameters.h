@@ -23,11 +23,15 @@ public:
     // TEA-specific parameters
     float teaWeight;
     std::string teaMatrixFile;
-    int minUngappedScore;
+    float loglinearM;
+    float loglinearC;
+    float pFP;
 
     PARAMETER(PARAM_TEA_WEIGHT)
     PARAMETER(PARAM_TEA_MAT)
-    PARAMETER(PARAM_MIN_UNGAPPED_SCORE)
+    PARAMETER(PARAM_LOGLINEAR_M)
+    PARAMETER(PARAM_LOGLINEAR_C)
+    PARAMETER(PARAM_P_FP)
 
     // Parameter vectors for TEA commands
     std::vector<MMseqsParameter*> createteadb;
