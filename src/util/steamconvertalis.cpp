@@ -198,11 +198,10 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
         outcodes[teaColumns[i].first] = teaColumns[i].second;
     }
 
-    // The main DB has TEA sequences; the _aa companion has AA sequences
-    // For TEA-specific output, we load the main DBs as "TEA" sequences
-    // Note: qDbr/tDbr already load the main DB (TEA seqs) via IndexReader
-    // needSequenceDB also covers TEA since they share the same DB
-
+    // The main DB has TEA sequences; the _aa companion has AA sequences.
+    // Standard columns (qaln, taln, qseq, tseq, fident) should use AA.
+    // TEA-specific columns (qteaaln, tteaaln, qteaseq, tteaseq, tfident) use TEA (main DB).
+    bool needAADB = needSequenceDB;  // any standard seq column needs AA
     if (needTeaDB) {
         needSequenceDB = true; // TEA seqs are in the main DB
     }
@@ -251,6 +250,28 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
     } else {
         tDbr = new IndexReader(par.db2, par.threads, IndexReader::SRC_SEQUENCES, (touch) ? (IndexReader::PRELOAD_INDEX | IndexReader::PRELOAD_DATA) : 0, dbaccessMode);
         tDbrHeader = new IndexReader(par.db2, par.threads, IndexReader::SRC_HEADERS, (touch) ? (IndexReader::PRELOAD_INDEX | IndexReader::PRELOAD_DATA) : 0);
+    }
+
+    // Load AA companion databases for standard output columns (qaln, taln, qseq, tseq, fident)
+    DBReader<unsigned int> *qAaDbr = NULL;
+    DBReader<unsigned int> *tAaDbr = NULL;
+    if (needAADB) {
+        std::string qAaDbName = par.db1 + "_aa";
+        if (FileUtil::fileExists((qAaDbName + ".dbtype").c_str())) {
+            qAaDbr = new DBReader<unsigned int>(qAaDbName.c_str(), (qAaDbName + ".index").c_str(), par.threads,
+                                                 DBReader<unsigned int>::USE_DATA | DBReader<unsigned int>::USE_INDEX);
+            qAaDbr->open(DBReader<unsigned int>::NOSORT);
+            if (sameDB) {
+                tAaDbr = qAaDbr;
+            } else {
+                std::string tAaDbName = par.db2 + "_aa";
+                if (FileUtil::fileExists((tAaDbName + ".dbtype").c_str())) {
+                    tAaDbr = new DBReader<unsigned int>(tAaDbName.c_str(), (tAaDbName + ".index").c_str(), par.threads,
+                                                         DBReader<unsigned int>::USE_DATA | DBReader<unsigned int>::USE_INDEX);
+                    tAaDbr->open(DBReader<unsigned int>::NOSORT);
+                }
+            }
+        }
     }
 
     bool queryNucs = Parameters::isEqualDbtype(qDbr.sequenceReader->getDbtype(), Parameters::DBTYPE_NUCLEOTIDES);
@@ -393,8 +414,10 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
             progress.updateProgress();
 
             const unsigned int queryKey = alnDbr.getDbKey(i);
-            char *querySeqData = NULL;
+            char *querySeqData = NULL;  // TEA sequence (main DB)
+            char *queryAAData = NULL;   // AA sequence (_aa companion)
             size_t querySeqLen = 0;
+            size_t queryAALen = 0;
             queryProfData.clear();
             if (needSequenceDB) {
                 size_t qId = qDbr.sequenceReader->getId(queryKey);
@@ -403,6 +426,10 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
                 if (queryProfile) {
                     size_t queryEntryLen = qDbr.sequenceReader->getEntryLen(qId);
                     Sequence::extractProfileConsensus(querySeqData, queryEntryLen, *subMat, queryProfData);
+                }
+                if (qAaDbr != NULL) {
+                    queryAAData = qAaDbr->getData(qAaDbr->getId(queryKey), thread_idx);
+                    queryAALen = qAaDbr->getSeqLen(qAaDbr->getId(queryKey));
                 }
             }
 
@@ -501,7 +528,8 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
                             }
                             result.append(buffer, count);
                         } else {
-                            char *targetSeqData = NULL;
+                            char *targetSeqData = NULL;  // TEA sequence
+                            char *targetAAData = NULL;   // AA sequence
                             targetProfData.clear();
                             unsigned int taxon = 0;
                             if (needTaxonomy || needTaxonomyMapping) {
@@ -519,6 +547,9 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
                                 if (targetProfile) {
                                     size_t targetEntryLen = tDbr->sequenceReader->getEntryLen(tId);
                                     Sequence::extractProfileConsensus(targetSeqData, targetEntryLen, *subMat, targetProfData);
+                                }
+                                if (tAaDbr != NULL) {
+                                    targetAAData = tAaDbr->getData(tAaDbr->getId(res.dbKey), thread_idx);
                                 }
                             }
                             for(size_t i = 0; i < outcodes.size(); i++) {
@@ -583,14 +614,15 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
                                         if (queryProfile) {
                                             result.append(queryProfData.c_str(), res.qLen);
                                         } else {
-                                            result.append(querySeqData, res.qLen);
+                                            // Use AA sequence if available, fall back to TEA
+                                            result.append(queryAAData, res.qLen);
                                         }
                                         break;
                                     case Parameters::OUTFMT_TSEQ:
                                         if (targetProfile) {
                                             result.append(targetProfData.c_str(), res.dbLen);
                                         } else {
-                                            result.append(targetSeqData, res.dbLen);
+                                            result.append(targetAAData, res.dbLen);
                                         }
                                         break;
                                     case Parameters::OUTFMT_QHEADER:
@@ -605,7 +637,7 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
                                                                Matcher::uncompressAlignment(res.backtrace), false, (res.qStartPos > res.qEndPos),
                                                                (isTranslatedSearch == true && queryNucs == true), translateNucl);
                                         } else {
-                                            printSeqBasedOnAln(result, querySeqData, res.qStartPos,
+                                            printSeqBasedOnAln(result, queryAAData, res.qStartPos,
                                                                Matcher::uncompressAlignment(res.backtrace), false, (res.qStartPos > res.qEndPos),
                                                                (isTranslatedSearch == true && queryNucs == true), translateNucl);
                                         }
@@ -617,7 +649,7 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
                                                                (res.dbStartPos > res.dbEndPos),
                                                                (isTranslatedSearch == true && targetNucs == true), translateNucl);
                                         } else {
-                                            printSeqBasedOnAln(result, targetSeqData, res.dbStartPos,
+                                            printSeqBasedOnAln(result, targetAAData, res.dbStartPos,
                                                                Matcher::uncompressAlignment(res.backtrace), true,
                                                                (res.dbStartPos > res.dbEndPos),
                                                                (isTranslatedSearch == true && targetNucs == true), translateNucl);
@@ -679,8 +711,8 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
                                             for (size_t pos = 0; pos < unpackedBt.size(); pos++) {
                                                 switch (unpackedBt[pos]) {
                                                     case 'M': {
-                                                        char qRes = queryProfile ? queryProfData[qPos] : querySeqData[qPos];
-                                                        char tRes = targetProfile ? targetProfData[tPos] : targetSeqData[tPos];
+                                                        char qRes = queryProfile ? queryProfData[qPos] : queryAAData[qPos];
+                                                        char tRes = targetProfile ? targetProfData[tPos] : targetAAData[tPos];
                                                         pPositive += (subMat->subMatrix[subMat->aa2num[(int)qRes]][subMat->aa2num[(int)tRes]] > 0);
                                                         matchCount += 1;
                                                         qPos++;
@@ -968,6 +1000,14 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
     if (sameDB == false) {
         delete tDbr;
         delete tDbrHeader;
+    }
+    if (qAaDbr != NULL) {
+        qAaDbr->close();
+        if (!sameDB && tAaDbr != NULL) {
+            tAaDbr->close();
+            delete tAaDbr;
+        }
+        delete qAaDbr;
     }
     if (needSequenceDB) {
         delete evaluer;
