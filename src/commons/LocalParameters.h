@@ -41,8 +41,6 @@ public:
     // Workflow parameter vectors
     std::vector<MMseqsParameter*> teasearchworkflow;
     std::vector<MMseqsParameter*> easyteasearchworkflow;
-    std::vector<MMseqsParameter*> teaclusterworkflow;
-    std::vector<MMseqsParameter*> easyteaclusterworkflow;
 
     LocalParameters();
 

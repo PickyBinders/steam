@@ -2,31 +2,6 @@
 
 STEAM is heavily adapted from [Foldseek](https://github.com/steineggerlab/foldseek) (Van Kempen et al., Nature Biotechnology 2024), replacing Foldseek's 3Di structural alphabet (derived from backbone coordinates) with [TEA](https://github.com/PickyBinders/tea). This means STEAM can be applied to any protein sequence, no 3D structure required. Like Foldseek, STEAM is built on the [MMseqs2](https://github.com/soedinglab/MMseqs2) framework.
 
-## How it works
-
-STEAM uses paired representations for each protein: a TEA sequence encoding structural features learned from ESM2, and the standard amino acid sequence. Both are scored simultaneously during alignment using the MATCHA substitution matrix (for TEA) and BLOSUM62 (for amino acids), providing better sensitivity than either signal alone.
-
-### Search pipeline
-
-1. **Prefiltering**: Fast k-mer matching on TEA sequences (k=6, spaced pattern) to find candidate pairs
-2. **Gapped alignment**: Smith-Waterman alignment with combined TEA+AA scoring
-3. **E-value estimation**: Log-linear statistical model calibrated on SCOP structural classification
-
-### Clustering pipeline
-
-Clustering follows the MMseqs2/Foldseek cascaded approach:
-
-1. **Linclust** (linear-time initial clustering):
-   - k-mer matching with auto-selected k and reduced alphabet
-   - TEA+AA ungapped rescoring
-   - Pre-clustering from ungapped scores
-   - Gapped SW alignment on cluster representative-member pairs only
-   - Merge pre-clusters with gapped clusters
-2. **Cascaded refinement** (optional, iterative):
-   - Prefilter remaining sequences with increasing sensitivity
-   - Gapped alignment and clustering at each step
-   - Default 3 cascade steps
-
 ## Requirements
 
 - CMake >= 3.15
@@ -69,27 +44,13 @@ steam easy-search query_tea.fasta query_aa.fasta \
                    result.m8 tmp
 ```
 
-### 3. Cluster
-
-```bash
-steam easy-cluster sequences_tea.fasta sequences_aa.fasta \
-                    result tmp \
-                    -c 0.9 -e 0.01
-```
-
-### 4. Interpret results
-
-Results are sorted by E-value (best first). An E-value of 10 means approximately 10 false positive hits are expected per query at that score threshold. Hits with E < 1 are generally significant.
-
 ## Commands
 
 | Command | Description |
 |---------|-------------|
 | `easy-search` | Search FASTA pairs against FASTA pairs or a pre-built database |
-| `easy-cluster` | Cluster paired TEA+AA FASTA files |
 | `createdb` | Create a STEAM database from paired TEA/AA FASTA files |
 | `search` | Search pre-built databases (faster for repeated searches) |
-| `cluster` | Cluster a pre-built database |
 | `convertalis` | Convert alignment results to various output formats |
 | `tearescorediagonal` | Ungapped TEA+AA diagonal rescoring |
 
@@ -105,38 +66,12 @@ steam createdb target_tea.fasta target_aa.fasta targetDB
 steam easy-search query_tea.fasta query_aa.fasta targetDB result.m8 tmp
 ```
 
-The `createdb` command reads TEA and AA FASTA files in lockstep -- headers must match in order. TEA headers with entropy suffixes from `tea_convert` (e.g., `>seq1|H=0.123`) are stripped automatically for matching.
-
 ## Key parameters
 
-### Search
-
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--aa-weight` | 1.4 | Weight for amino acid scores in combined scoring (0 = TEA only) |
-| `--matcha` | matcha.out (bundled) | MATCHA substitution matrix for TEA scoring |
 | `-e` | 100 | E-value threshold |
 | `--max-seqs` | 2000 | Maximum results per query from prefiltering |
-| `--gap-open` | 14 | Gap open penalty |
-| `--gap-extend` | 2 | Gap extension penalty |
-| `-k` | 6 | k-mer length for prefiltering |
-| `--exact-kmer-matching` | 1 | Use exact k-mer matching |
-| `--loglinear-m` | -0.0183 | Slope for log-linear E-value model |
-| `--loglinear-c` | 0.032 | Intercept for log-linear E-value model |
-| `--p-fp` | 1.0 | P(FP) prior for E-value computation |
-| `--exhaustive-search` | false | Exhaustive all-vs-all search (slow, for benchmarking) |
-
-### Clustering
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `-c` | 0.8 | Coverage threshold |
-| `-e` | 0.01 | E-value threshold |
-| `--min-seq-id` | 0 | Minimum sequence identity (also controls auto-sensitivity) |
-| `--cluster-steps` | 3 | Number of cascaded clustering iterations |
-| `--cluster-mode` | auto | Clustering algorithm (auto-selected: set-cover or greedy) |
-| `--cov-mode` | 0 | Coverage mode (0=bidirectional, 1=target, 2=query) |
-| `--single-step-clustering` | false | Skip cascaded steps, use linclust only |
 
 ## Output format
 
@@ -146,13 +81,7 @@ Default BLAST-tab format (same as MMseqs2/BLAST -outfmt 6):
 query  target  fident  alnlen  mismatch  gapopen  qstart  qend  tstart  tend  evalue  bits
 ```
 
-Custom output with `--format-output`:
-
-```bash
-steam easy-search ... --format-output query,target,evalue,fident,alnlen,qcov,tcov
-```
-
-### TEA-specific output columns
+Custom output with `--format-output` adds TEA-specific output columns:
 
 | Column | Description |
 |--------|-------------|
@@ -174,7 +103,7 @@ The alignment score at each position is the sum of:
 
 ## E-value computation
 
-STEAM uses a log-linear E-value model following [Edgar & Sahakyan (2025)](https://doi.org/10.1101/2025.07.17.665375), which accounts for the heavy-tailed false positive score distribution observed in structural alphabet searches. E-values are computed as:
+STEAM uses a log-linear E-value model following [Edgar & Sahakyan (2025)](https://doi.org/10.1101/2025.07.17.665375). E-values are computed as:
 
 ```
 E(s) = (H/Q) * 10^(m*s + c)
