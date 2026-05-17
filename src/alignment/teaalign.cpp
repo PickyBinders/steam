@@ -276,17 +276,22 @@ int teaalign(int argc, const char **argv, const Command &command) {
                 }
             }
 
-            if (alignmentResult.size() > 1) {
-                // Sort by E-value ascending (= raw score descending)
-                SORT_SERIAL(alignmentResult.begin(), alignmentResult.end(),
-                    [](const Matcher::result_t &a, const Matcher::result_t &b) {
+            // Sort by E-value ascending (= raw score descending).
+            std::vector<size_t> order(alignmentResult.size());
+            for (size_t i = 0; i < order.size(); i++) order[i] = i;
+            if (order.size() > 1) {
+                const auto &ar = alignmentResult;
+                SORT_SERIAL(order.begin(), order.end(),
+                    [&ar](size_t ia, size_t ib) {
+                        const Matcher::result_t &a = ar[ia];
+                        const Matcher::result_t &b = ar[ib];
                         if (a.eval != b.eval) return a.eval < b.eval;
                         if (a.score != b.score) return a.score > b.score;
                         return a.dbKey < b.dbKey;
                     });
             }
-            for (size_t result = 0; result < alignmentResult.size(); result++) {
-                size_t len = Matcher::resultToBuffer(buffer, alignmentResult[result], par.addBacktrace);
+            for (size_t i = 0; i < order.size(); i++) {
+                size_t len = Matcher::resultToBuffer(buffer, alignmentResult[order[i]], par.addBacktrace);
                 resultBuffer.append(buffer, len);
             }
             dbw.writeData(resultBuffer.c_str(), resultBuffer.length(), queryKey, thread_idx);
