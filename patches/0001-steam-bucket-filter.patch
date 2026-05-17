@@ -1,5 +1,5 @@
 diff --git a/src/prefiltering/QueryMatcher.cpp b/src/prefiltering/QueryMatcher.cpp
-index 067e661c..1979fa93 100644
+index 067e661c..4e6bbcfd 100644
 --- a/src/prefiltering/QueryMatcher.cpp
 +++ b/src/prefiltering/QueryMatcher.cpp
 @@ -2,6 +2,11 @@
@@ -14,16 +14,17 @@ index 067e661c..1979fa93 100644
  
  #define FE_1(WHAT, X) WHAT(X)
  #define FE_2(WHAT, X, ...) WHAT(X)FE_1(WHAT, __VA_ARGS__)
-@@ -241,6 +246,59 @@ std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned
+@@ -241,6 +246,69 @@ std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned
  }
  
  size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
 +    // STEAM patch: skip query k-mer positions whose target bucket falls in
 +    // the top STEAM_BUCKET_COVERAGE_PCT %% of the index by cumulative entry
 +    // coverage. Dataset-invariant: same percentage works on any DB.
++    // Default: 20 (on). Set STEAM_BUCKET_COVERAGE_PCT=0 to disable.
 +    static const double steamCoveragePct = []() {
 +        const char *env = getenv("STEAM_BUCKET_COVERAGE_PCT");
-+        return env ? atof(env) : 0.0;
++        return env ? atof(env) : 20.0;
 +    }();
 +    static std::atomic<size_t> steamCoverageThreshold{0};
 +    static std::once_flag steamCoverageOnce;
@@ -46,6 +47,8 @@ index 067e661c..1979fa93 100644
 +                prev = off;
 +            }
 +            auto t_scan = std::chrono::steady_clock::now();
++            Debug(Debug::INFO) << "[steam-bucket-filter] sorting "
++                << bucketSizes.size() << " non-empty buckets...\n";
 +            std::sort(bucketSizes.begin(), bucketSizes.end(),
 +                      std::greater<size_t>());
 +            auto t_sort = std::chrono::steady_clock::now();
@@ -59,6 +62,13 @@ index 067e661c..1979fa93 100644
 +            auto ms = [](auto a, auto b) {
 +                return std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count();
 +            };
++            const size_t kSteamBucketFloor = 10;
++            if (threshold > 0 && threshold < kSteamBucketFloor) {
++                Debug(Debug::INFO) << "[steam-bucket-filter] threshold "
++                    << threshold << " below floor " << kSteamBucketFloor
++                    << " (distribution too uniform); filter disabled\n";
++                threshold = 0;
++            }
 +            steamCoverageThreshold.store(threshold, std::memory_order_release);
 +            Debug(Debug::INFO) << "[steam-bucket-filter] coverage="
 +                << steamCoveragePct << "% -> bucket threshold " << threshold
@@ -74,7 +84,7 @@ index 067e661c..1979fa93 100644
      // go through the query sequence
      size_t kmerListLen = 0;
      size_t numMatches = 0;
-@@ -295,6 +353,10 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
+@@ -295,6 +363,10 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
  
          for (unsigned int kmerPos = 0; kmerPos < kmerElementSize; kmerPos++) {
              const IndexEntryLocal *entries = indexTable->getDBSeqList(index[kmerPos], &seqListSize);
@@ -85,7 +95,7 @@ index 067e661c..1979fa93 100644
              // DEBUG
              //std::cout << seq->getDbKey() << std::endl;
              //idx.printKmer(index[kmerPos], kmerSize, kmerSubMat->num2aa);
-@@ -372,6 +434,9 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
+@@ -372,6 +444,9 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
      stats->querySeqLen = seq->L;
      stats->dbMatches   = overflowNumMatches + numMatches;
  
