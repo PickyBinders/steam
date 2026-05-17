@@ -45,6 +45,15 @@ std::vector<Command> steamCommands = {
                                    {"targetDB", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA, &DbValidator::sequenceDb },
                                    {"resultDB", DbType::ACCESS_MODE_OUTPUT, DbType::NEED_DATA, &DbValidator::resultDb },
                                    {"tmpDir", DbType::ACCESS_MODE_OUTPUT, DbType::NEED_DATA, &DbValidator::directory }}},
+        // Prefilter (MMseqs2 k-mer prefilter, on TEA sequences with steam defaults)
+        {"prefilter",    prefilter,    &localPar.teaprefilter,            COMMAND_PREFILTER,
+                "Fast k-mer prefilter on TEA sequences",
+                "steam prefilter queryDB targetDB prefilterDB\n",
+                STEAM_AUTHOR,
+                "<i:queryDB> <i:targetDB> <o:prefilterDB>",
+                CITATION_MMSEQS2, {{"queryDB", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA, &DbValidator::sequenceDb },
+                                   {"targetDB", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA, &DbValidator::sequenceDb },
+                                   {"prefilterDB", DbType::ACCESS_MODE_OUTPUT, DbType::NEED_DATA, &DbValidator::prefilterDb }}},
         // Ungapped diagonal rescoring
         {"tearescorediagonal", tearescorediagonal, &localPar.tearescorediagonal, COMMAND_ALIGNMENT,
                 "Rescore prefilter diagonals with TEA+AA combined ungapped scoring",

@@ -26,7 +26,7 @@ LocalParameters::LocalParameters() :
                           "^-?[0-9]*(\\.[0-9]+)?$",
                           MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
         PARAM_P_FP(PARAM_P_FP_ID, "--p-fp", "P(FP) prior",
-                   "Prior probability that a reported hit is a false positive (0.5 = filtered, 1.0 = unfiltered)",
+                   "Prior probability that a reported hit is a false positive",
                    typeid(float), (void *) &pFP,
                    "^[0-9]*(\\.[0-9]+)?$",
                    MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT)
@@ -64,6 +64,9 @@ LocalParameters::LocalParameters() :
     // tearescorediagonal = align + TEA-specific params (for ungapped diagonal rescoring)
     tearescorediagonal = combineList(align, {&PARAM_TEA_WEIGHT, &PARAM_TEA_MAT});
 
+    // teaprefilter = base prefilter list (for the steam-specific prefilter alias)
+    teaprefilter = prefilter;
+
     // teasearch = prefilter + teaalign + tearescorediagonal + common
     teasearchworkflow = combineList(prefilter, teaalign);
     teasearchworkflow = combineList(teasearchworkflow, tearescorediagonal);
@@ -95,6 +98,7 @@ LocalParameters::LocalParameters() :
     };
     drop(teaalign);
     drop(tearescorediagonal);
+    drop(teaprefilter);
     drop(teasearchworkflow);
     drop(easyteasearchworkflow);
 }
