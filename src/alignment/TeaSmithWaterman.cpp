@@ -127,6 +127,35 @@ TeaSmithWaterman::TeaSmithWaterman(size_t maxSequenceLength, int aaSize,
     memset(profile->composition_bias_aa_rev, 0, maxSequenceLength * sizeof(int8_t));
     memset(profile->composition_bias_tea_rev, 0, maxSequenceLength * sizeof(int8_t));
     block = block_new_aa_trace_xdrop(maxSequenceLength, maxSequenceLength, 4096);
+
+    // Cached block_aligner resources
+    block_max_size = 4096;
+    block_max_seqlen = maxSequenceLength;
+    block_query_aa     = block_new_padded_aa(maxSequenceLength, block_max_size);
+    block_query_tea    = block_new_padded_aa(maxSequenceLength, block_max_size);
+    block_target_aa    = block_new_padded_aa(maxSequenceLength, block_max_size);
+    block_target_tea   = block_new_padded_aa(maxSequenceLength, block_max_size);
+    block_query_bias_pb  = block_new_pos_bias(maxSequenceLength, block_max_size);
+    block_target_bias_pb = block_new_pos_bias(maxSequenceLength, block_max_size);
+    block_cigar = block_new_cigar(maxSequenceLength, maxSequenceLength);
+    block_query_bias_buf  = new int16_t[maxSequenceLength];
+    block_target_bias_buf = new int16_t[maxSequenceLength];
+
+    // Build the substitution matrices once. The numerical variant indexes by
+    // raw byte (0..26 range), so we use the mmseqs internal alphabet encoding
+    // directly and skip the per-align ASCII conversion (num2aa) loop.
+    block_matrix_aa  = block_new_simple_aamatrix(1, -1);
+    block_matrix_tea = block_new_simple_aamatrix(1, -1);
+    for (int aa1 = 0; aa1 < subMatAA->alphabetSize; aa1++) {
+        for (int aa2 = 0; aa2 < subMatAA->alphabetSize; aa2++) {
+            block_set_aamatrix_num(block_matrix_aa, aa1, aa2, subMatAA->subMatrix[aa1][aa2]);
+        }
+    }
+    for (int aa1 = 0; aa1 < subMatTea->alphabetSize; aa1++) {
+        for (int aa2 = 0; aa2 < subMatTea->alphabetSize; aa2++) {
+            block_set_aamatrix_num(block_matrix_tea, aa1, aa2, subMatTea->subMatrix[aa1][aa2]);
+        }
+    }
 }
 
 TeaSmithWaterman::~TeaSmithWaterman(){
@@ -198,6 +227,17 @@ TeaSmithWaterman::~TeaSmithWaterman(){
     delete [] maxColumn;
     delete profile;
     block_free_aa_trace_xdrop(block);
+    block_free_aamatrix(block_matrix_aa);
+    block_free_aamatrix(block_matrix_tea);
+    block_free_padded_aa(block_query_aa);
+    block_free_padded_aa(block_query_tea);
+    block_free_padded_aa(block_target_aa);
+    block_free_padded_aa(block_target_tea);
+    block_free_pos_bias(block_query_bias_pb);
+    block_free_pos_bias(block_target_bias_pb);
+    block_free_cigar(block_cigar);
+    delete [] block_query_bias_buf;
+    delete [] block_target_bias_buf;
 }
 
 
@@ -374,7 +414,7 @@ TeaSmithWaterman::s_align TeaSmithWaterman::alignStartPosBacktraceBlock(
         const uint8_t gap_extend,
         std::string & backtrace,
         TeaSmithWaterman::s_align r) {
-#define MAX_SIZE 4096 //TODO
+    const size_t MAX_SIZE = block_max_size;
     size_t query_len = profile->query_length;
     size_t target_len = db_length;
     Gaps gaps;
@@ -382,71 +422,39 @@ TeaSmithWaterman::s_align TeaSmithWaterman::alignStartPosBacktraceBlock(
     gaps.extend = -gap_extend;
     int32_t target_score = r.score1;
 
-    // note: instead of query_len or target_len, it is possible to use query_aa really large length
-    // and reuse data structures to avoid allocations
-    PaddedBytes* query_aa = block_new_padded_aa(query_len, MAX_SIZE);
-    PaddedBytes* query_tea = block_new_padded_aa(query_len, MAX_SIZE);
-    PosBias* query_bias = block_new_pos_bias(query_len, MAX_SIZE);
-    PaddedBytes* target_aa = block_new_padded_aa(target_len, MAX_SIZE);
-    PaddedBytes* target_tea = block_new_padded_aa(target_len, MAX_SIZE);
-    PosBias* target_bias = block_new_pos_bias(target_len, MAX_SIZE);
-
     int32_t queryStartPos = query_len - (r.qEndPos1 + 1);
     int32_t queryAlnLen = r.qEndPos1 + 1;
-    // convert query_aa_rev_sequence to ascii
-    std::string query_aa_sequence_str;
-    std::string query_tea_sequence_str;
-    int16_t * query_bias_arr = new int16_t[queryAlnLen];
-    for(int i = 0; i < queryAlnLen; i++){
-        query_aa_sequence_str.push_back(subMatAA->num2aa[profile->query_aa_rev_sequence[queryStartPos + i]]);
-        query_tea_sequence_str.push_back(subMatTea->num2aa[profile->query_tea_rev_sequence[queryStartPos + i]]);
-        query_bias_arr[i] =  profile->composition_bias_aa_rev[queryStartPos + i] +
-                             profile->composition_bias_tea_rev[queryStartPos + i];
-    }
-
-
-    block_set_bytes_padded_aa(query_aa,  (const uint8_t*) query_aa_sequence_str.data(), queryAlnLen, MAX_SIZE);
-    block_set_bytes_padded_aa(query_tea, (const uint8_t*) query_tea_sequence_str.data(), queryAlnLen, MAX_SIZE);
-
-    block_set_pos_bias(query_bias, query_bias_arr, queryAlnLen);
-
     int32_t targetAlnLen = r.dbEndPos1 + 1;
-    std::string db_aa_sequence_str;
-    std::string db_tea_sequence_str;
-    // copy this db_aa_sequence,db_aa_sequence + r.dbEndPos1 + 1 in reverse order to db_aa_sequence_str and mappping to ascii using subMatAA->num2aa
-    for(int i = targetAlnLen - 1; i >= 0; i--){
-        db_aa_sequence_str.push_back(subMatAA->num2aa[db_aa_sequence[i]]);
-        db_tea_sequence_str.push_back(subMatTea->num2aa[db_tea_sequence[i]]);
+
+    // Build the position-bias arrays for this alignment. The sequences
+    // themselves go through block_set_bytes_padded_aa_numsequence directly
+    // (no ASCII conversion needed since the matrix was built with
+    // block_set_aamatrix_num in the constructor).
+    for (int i = 0; i < queryAlnLen; i++) {
+        block_query_bias_buf[i] = profile->composition_bias_aa_rev[queryStartPos + i] +
+                                  profile->composition_bias_tea_rev[queryStartPos + i];
     }
-    block_set_bytes_padded_aa(target_aa, (const uint8_t*) db_aa_sequence_str.data(), targetAlnLen, MAX_SIZE);
-    block_set_bytes_padded_aa(target_tea, (const uint8_t*)db_tea_sequence_str.data(), targetAlnLen, MAX_SIZE);
-    int16_t * target_bias_arr = new int16_t[targetAlnLen];
-    memset(target_bias_arr, 0, targetAlnLen * sizeof(int16_t));
-    block_set_pos_bias(target_bias, target_bias_arr, targetAlnLen);
+    memset(block_target_bias_buf, 0, targetAlnLen * sizeof(int16_t));
 
+    block_set_bytes_padded_aa_numsequence(block_query_aa,
+        (const uint8_t*)(profile->query_aa_rev_sequence + queryStartPos),
+        queryAlnLen, MAX_SIZE);
+    block_set_bytes_padded_aa_numsequence(block_query_tea,
+        (const uint8_t*)(profile->query_tea_rev_sequence + queryStartPos),
+        queryAlnLen, MAX_SIZE);
+    block_set_pos_bias(block_query_bias_pb, block_query_bias_buf, queryAlnLen);
 
-    AAMatrix* matrix_aa = block_new_simple_aamatrix(1, -1);
-    for (int aa1 = 0; aa1 < subMatAA->alphabetSize; aa1++) {
-        for (int aa2 = 0; aa2 < subMatAA->alphabetSize; aa2++) {
-            // set to actual scores instead of zeros!
-            block_set_aamatrix(matrix_aa, subMatAA->num2aa[aa1], subMatAA->num2aa[aa2],
-                               subMatAA->subMatrix[aa1][aa2]);
-        }
+    // Target sequences need to be reversed (the block aligner expects
+    // alignment-ending-position-anchored input).
+    unsigned char *target_aa_rev  = (unsigned char *)alloca(targetAlnLen);
+    unsigned char *target_tea_rev = (unsigned char *)alloca(targetAlnLen);
+    for (int i = 0; i < targetAlnLen; i++) {
+        target_aa_rev[i]  = db_aa_sequence [targetAlnLen - 1 - i];
+        target_tea_rev[i] = db_tea_sequence[targetAlnLen - 1 - i];
     }
-
-    AAMatrix* matrix_tea = block_new_simple_aamatrix(1, -1);
-    for (int aa1 = 0; aa1 < subMatTea->alphabetSize; aa1++) {
-
-        for (int aa2 = 0; aa2 < subMatTea->alphabetSize; aa2++) {
-            // set to actual scores instead of zeros!
-            block_set_aamatrix(matrix_tea, subMatTea->num2aa[aa1], subMatTea->num2aa[aa2],
-                               subMatTea->subMatrix[aa1][aa2]);
-
-        }
-
-    }
-
-    Cigar* cigar = block_new_cigar(queryAlnLen, targetAlnLen);
+    block_set_bytes_padded_aa_numsequence(block_target_aa,  target_aa_rev,  targetAlnLen, MAX_SIZE);
+    block_set_bytes_padded_aa_numsequence(block_target_tea, target_tea_rev, targetAlnLen, MAX_SIZE);
+    block_set_pos_bias(block_target_bias_pb, block_target_bias_buf, targetAlnLen);
 
     AlignResult res;
     size_t min_size = 32;
@@ -462,8 +470,9 @@ TeaSmithWaterman::s_align TeaSmithWaterman::alignStartPosBacktraceBlock(
         range.max = MAX_SIZE;
         // estimated x-drop threshold
         int32_t x_drop = -(min_size * gaps.extend + gaps.open);
-        block_align_3di_aa_trace_xdrop(block, query_aa, query_tea, query_bias, target_aa, target_tea, target_bias,
-                                       matrix_aa, matrix_tea, gaps, range, x_drop);
+        block_align_3di_aa_trace_xdrop(block, block_query_aa, block_query_tea, block_query_bias_pb,
+                                       block_target_aa, block_target_tea, block_target_bias_pb,
+                                       block_matrix_aa, block_matrix_tea, gaps, range, x_drop);
         res = block_res_aa_trace_xdrop(block);
         min_size *= 2;
     }
@@ -477,42 +486,34 @@ TeaSmithWaterman::s_align TeaSmithWaterman::alignStartPosBacktraceBlock(
         goto cleanup;
     }
 
-    block_cigar_aa_trace_xdrop(block, res.query_idx, res.reference_idx, cigar);
-//    printf("query_aa: %s\nquery_tea: %s\ntarget_aa: %s\ntarget_tea: %s\nscore: %d\nidx: (%lu, %lu)\n",
-//           profile->query_aa_rev_sequence,
-//           profile->query_tea_rev_sequence,
-//           db_aa_sequence,
-//           db_tea_sequence,
-//           res.score,
-//           res.query_idx,
-//           res.reference_idx);
+    block_cigar_aa_trace_xdrop(block, res.query_idx, res.reference_idx, block_cigar);
 
-
-    cigar_len = block_len_cigar(cigar);
+    cigar_len = block_len_cigar(block_cigar);
     // Note: 'M' signals either query_aa match or mismatch
     aaIds = 0;
     teaIds = 0;
     queryPos = 0;
     targetPos = 0;
+    // Identity counting compares the (numerically-encoded) sequences directly
+    // out of the profile/target buffers. Query offset = queryStartPos + queryPos
+    // into profile->query_*_rev_sequence; target offset = targetAlnLen - 1 - targetPos
+    // into db_*_sequence (the block aligner sees the target reversed).
     for (size_t i = 0; i < cigar_len; i++) {
-        OpLen o = block_get_cigar(cigar, i);
-        //printf("%lu%c", o.len, ops_char[o.op]);
-        if(o.op == 1){
-            for(size_t j = 0; j < o.len; j++){
-                if(query_aa_sequence_str[queryPos + j] == db_aa_sequence_str[targetPos + j]){
-                    aaIds++;
-                }
-                if(query_tea_sequence_str[queryPos + j] == db_tea_sequence_str[targetPos + j]){
-                    teaIds++;
-                }
+        OpLen o = block_get_cigar(block_cigar, i);
+        if (o.op == 1) {
+            for (size_t j = 0; j < o.len; j++) {
+                int qi = queryStartPos + queryPos + j;
+                int ti = targetAlnLen - 1 - (targetPos + j);
+                if (profile->query_aa_rev_sequence[qi]  == (int8_t)db_aa_sequence[ti])  aaIds++;
+                if (profile->query_tea_rev_sequence[qi] == (int8_t)db_tea_sequence[ti]) teaIds++;
             }
             queryPos += o.len;
             targetPos += o.len;
             backtrace.append(o.len,'M');
-        }else if(o.op == 4){
+        } else if (o.op == 4) {
             queryPos += o.len;
             backtrace.append(o.len,'I');
-        }else if(o.op == 5){
+        } else if (o.op == 5) {
             targetPos += o.len;
             backtrace.append(o.len,'D');
         }
@@ -528,17 +529,8 @@ TeaSmithWaterman::s_align TeaSmithWaterman::alignStartPosBacktraceBlock(
     r.tCov = computeCov(r.dbStartPos1, r.dbEndPos1, db_length);
 
 cleanup:
-    block_free_cigar(cigar);
-    block_free_padded_aa(query_aa);
-    block_free_padded_aa(query_tea);
-    block_free_pos_bias(query_bias);
-    block_free_padded_aa(target_aa);
-    block_free_padded_aa(target_tea);
-    block_free_pos_bias(target_bias);
-    block_free_aamatrix(matrix_tea);
-    block_free_aamatrix(matrix_aa);
-    delete [] query_bias_arr;
-    delete [] target_bias_arr;
+    // All block_aligner resources are cached on the TeaSmithWaterman instance
+    // and reused across alignments; nothing to free per call.
     return r;
 }
 

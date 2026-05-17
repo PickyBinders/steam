@@ -265,6 +265,22 @@ private:
     simd_int* vHmax;
     uint8_t * maxColumn;
     BlockHandle block;
+    // Cached block_aligner resources reused across alignStartPosBacktraceBlock calls.
+    // Built once in ctor; sequence content updated per align via
+    // block_set_bytes_padded_aa_numsequence + block_set_pos_bias.
+    struct AAMatrix *block_matrix_aa;
+    struct AAMatrix *block_matrix_tea;
+    struct PaddedBytes *block_query_aa;
+    struct PaddedBytes *block_query_tea;
+    struct PaddedBytes *block_target_aa;
+    struct PaddedBytes *block_target_tea;
+    struct PosBias *block_query_bias_pb;
+    struct PosBias *block_target_bias_pb;
+    struct Cigar *block_cigar;
+    int16_t *block_query_bias_buf;
+    int16_t *block_target_bias_buf;
+    size_t block_max_size;
+    size_t block_max_seqlen;
     typedef struct {
         uint32_t score;
         int32_t ref;	 //0-based position
