@@ -7,9 +7,9 @@
 #include "teasearch.sh.h"
 
 static void teaSearchDefault(LocalParameters &par) {
-    par.compBiasCorrectionScale = 0.5;
-    par.maskMode = 0;
-}
+        par.compBiasCorrectionScale = 0.5;
+        par.maskMode = 0;
+    }
 
 int teasearch(int argc, const char **argv, const Command &command) {
     LocalParameters &par = LocalParameters::getLocalInstance();
@@ -39,7 +39,7 @@ int teasearch(int argc, const char **argv, const Command &command) {
     // Use lower comp bias scale for prefilter (matching foldseek)
     auto origScoringMatrixFile = par.scoringMatrixFile;
     par.scoringMatrixFile = MultiParam<NuclAA<std::string>>(NuclAA<std::string>(par.teaMatrixFile, par.teaMatrixFile));
-    cmd.addVariable("PREFILTER_PAR", par.createParameterString(par.prefilter).c_str());
+    cmd.addVariable("PREFILTER_PAR", par.createParameterString(par.teaprefilter).c_str());
 
     // Exhaustive prefilter: disable diagonal scoring, lower k, max sensitivity
     if (par.exhaustiveSearch) {
@@ -50,7 +50,7 @@ int teasearch(int argc, const char **argv, const Command &command) {
         par.spacedKmerPattern = "";
         par.sensitivity = 7.5;
         par.maxResListLen = 100000;
-        cmd.addVariable("EXHAUSTIVE_PREFILTER_PAR", par.createParameterString(par.prefilter).c_str());
+        cmd.addVariable("EXHAUSTIVE_PREFILTER_PAR", par.createParameterString(par.teaprefilter).c_str());
     }
 
     // Restore original --sub-mat so rescorediagonal and alignment use the AA matrix (e.g. BLOSUM62),
