@@ -1,0 +1,97 @@
+diff --git a/src/prefiltering/QueryMatcher.cpp b/src/prefiltering/QueryMatcher.cpp
+index 067e661c..1979fa93 100644
+--- a/src/prefiltering/QueryMatcher.cpp
++++ b/src/prefiltering/QueryMatcher.cpp
+@@ -2,6 +2,11 @@
+ #include "QueryMatcher.h"
+ #include "FastSort.h"
+ #include "Util.h"
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <mutex>
++#include <vector>
+ 
+ #define FE_1(WHAT, X) WHAT(X)
+ #define FE_2(WHAT, X, ...) WHAT(X)FE_1(WHAT, __VA_ARGS__)
+@@ -241,6 +246,68 @@ std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned
+ }
+ 
+ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
++    // STEAM patch: skip query k-mer positions whose target bucket falls in
++    // the top STEAM_BUCKET_COVERAGE_PCT %% of the index by cumulative entry
++    // coverage. Dataset-invariant: same percentage works on any DB.
++    static const double steamCoveragePct = []() {
++        const char *env = getenv("STEAM_BUCKET_COVERAGE_PCT");
++        return env ? atof(env) : 0.0;
++    }();
++    static std::atomic<size_t> steamCoverageThreshold{0};
++    static std::once_flag steamCoverageOnce;
++    size_t steamMaxBucket = 0;
++    if (steamCoveragePct > 0.0) {
++        std::call_once(steamCoverageOnce, [&]() {
++            auto t0 = std::chrono::steady_clock::now();
++            size_t tableSize = indexTable->getTableSize();
++            std::vector<size_t> bucketSizes;
++            bucketSizes.reserve(tableSize);
++            size_t totalEntries = 0;
++            size_t prev = indexTable->getOffset(0);
++            for (size_t i = 1; i <= tableSize; i++) {
++                size_t off = indexTable->getOffset(i);
++                size_t sz = off - prev;
++                if (sz > 0) {
++                    bucketSizes.push_back(sz);
++                    totalEntries += sz;
++                }
++                prev = off;
++            }
++            auto t_scan = std::chrono::steady_clock::now();
++            std::sort(bucketSizes.begin(), bucketSizes.end(),
++                      std::greater<size_t>());
++            auto t_sort = std::chrono::steady_clock::now();
++            size_t target = static_cast<size_t>(totalEntries * steamCoveragePct / 100.0);
++            size_t cum = 0, threshold = 0;
++            for (size_t s : bucketSizes) {
++                cum += s;
++                if (cum >= target) { threshold = s; break; }
++            }
++            auto t_done = std::chrono::steady_clock::now();
++            auto ms = [](auto a, auto b) {
++                return std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count();
++            };
++            steamCoverageThreshold.store(threshold, std::memory_order_release);
++            Debug(Debug::INFO) << "[steam-bucket-filter] coverage="
++                << steamCoveragePct << "% -> bucket threshold " << threshold
++                << " (entries=" << totalEntries
++                << " non-empty-buckets=" << bucketSizes.size()
++                << " scan=" << ms(t0, t_scan) << "ms"
++                << " sort=" << ms(t_scan, t_sort) << "ms"
++                << " cumsum=" << ms(t_sort, t_done) << "ms)\n";
++        });
++        steamMaxBucket = steamCoverageThreshold.load(std::memory_order_acquire);
++    }
++    size_t steamSkippedKmers = 0;
+     // go through the query sequence
+     size_t kmerListLen = 0;
+     size_t numMatches = 0;
+@@ -295,6 +362,11 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
+ 
+         for (unsigned int kmerPos = 0; kmerPos < kmerElementSize; kmerPos++) {
+             const IndexEntryLocal *entries = indexTable->getDBSeqList(index[kmerPos], &seqListSize);
++            if (steamMaxBucket > 0 && seqListSize > steamMaxBucket) {
++                steamSkippedKmers++;
++                continue;
++            }
+             // DEBUG
+             //std::cout << seq->getDbKey() << std::endl;
+             //idx.printKmer(index[kmerPos], kmerSize, kmerSubMat->num2aa);
+@@ -372,6 +444,9 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
+     stats->querySeqLen = seq->L;
+     stats->dbMatches   = overflowNumMatches + numMatches;
+ 
++    // Suppress unused-variable warning when the filter is inactive.
++    (void)steamSkippedKmers;
++
+     return hitCount;
+ }
+ 

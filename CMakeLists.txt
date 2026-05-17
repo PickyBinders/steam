@@ -26,6 +26,41 @@ if(NOT XCODE AND NOT MSVC AND NOT CMAKE_BUILD_TYPE)
     set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
 endif()
 
+# Apply STEAM patches to the bundled mmseqs2 submodule before configuring it.
+# Each patch lives in patches/*.patch and is applied at the lib/mmseqs root.
+# Idempotent: if a patch is already applied (reverse-check succeeds) we skip
+# it. If a patch cannot be applied and is also not already applied, the
+# build aborts loudly — this happens when the mmseqs submodule pointer was
+# bumped and the patch needs to be rebased against the new upstream code.
+file(GLOB STEAM_PATCHES "${CMAKE_CURRENT_SOURCE_DIR}/patches/*.patch")
+list(SORT STEAM_PATCHES)
+find_package(Git QUIET REQUIRED)
+foreach(PATCH ${STEAM_PATCHES})
+    get_filename_component(PATCH_NAME ${PATCH} NAME)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} apply --reverse --check ${PATCH}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/lib/mmseqs
+        RESULT_VARIABLE _patch_reverse_ok
+        OUTPUT_QUIET ERROR_QUIET
+    )
+    if(_patch_reverse_ok EQUAL 0)
+        message(STATUS "STEAM patch already applied: ${PATCH_NAME}")
+    else()
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} apply ${PATCH}
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/lib/mmseqs
+            RESULT_VARIABLE _patch_apply_ok
+        )
+        if(NOT _patch_apply_ok EQUAL 0)
+            message(FATAL_ERROR
+                "Failed to apply ${PATCH_NAME} to lib/mmseqs. "
+                "If the mmseqs submodule pointer was bumped, the patch may "
+                "need to be rebased against the new upstream code.")
+        endif()
+        message(STATUS "Applied STEAM patch: ${PATCH_NAME}")
+    endif()
+endforeach()
+
 # Build MMseqs2 as a framework library only (no executable)
 set(FRAMEWORK_ONLY 1 CACHE INTERNAL "" FORCE)
 include(MMseqsSetupDerivedTarget)
