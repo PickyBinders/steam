@@ -14,7 +14,7 @@ index 067e661c..1979fa93 100644
  
  #define FE_1(WHAT, X) WHAT(X)
  #define FE_2(WHAT, X, ...) WHAT(X)FE_1(WHAT, __VA_ARGS__)
-@@ -241,6 +246,68 @@ std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned
+@@ -241,6 +246,59 @@ std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned
  }
  
  size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
@@ -74,7 +74,7 @@ index 067e661c..1979fa93 100644
      // go through the query sequence
      size_t kmerListLen = 0;
      size_t numMatches = 0;
-@@ -295,6 +362,11 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
+@@ -295,6 +353,10 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
  
          for (unsigned int kmerPos = 0; kmerPos < kmerElementSize; kmerPos++) {
              const IndexEntryLocal *entries = indexTable->getDBSeqList(index[kmerPos], &seqListSize);
@@ -85,7 +85,7 @@ index 067e661c..1979fa93 100644
              // DEBUG
              //std::cout << seq->getDbKey() << std::endl;
              //idx.printKmer(index[kmerPos], kmerSize, kmerSubMat->num2aa);
-@@ -372,6 +444,9 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
+@@ -372,6 +434,9 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
      stats->querySeqLen = seq->L;
      stats->dbMatches   = overflowNumMatches + numMatches;
  
