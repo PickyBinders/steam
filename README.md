@@ -1,6 +1,6 @@
 # STEAM — Search with TEA against Many
 
-STEAM is heavily adapted from [Foldseek](https://github.com/steineggerlab/foldseek) (Van Kempen et al., Nature Biotechnology 2024), replacing Foldseek's 3Di structural alphabet (derived from backbone coordinates) with [TEA](https://github.com/PickyBinders/tea). This means STEAM can be applied to any protein sequence, no 3D structure required. Like Foldseek, STEAM is built on the [MMseqs2](https://github.com/soedinglab/MMseqs2) framework.
+STEAM is heavily adapted from [Foldseek](https://github.com/steineggerlab/foldseek) (Van Kempen et al., Nature Biotechnology 2024), replacing Foldseek's 3Di structural alphabet with [TEA](https://github.com/PickyBinders/tea). This means STEAM can be applied to any protein sequence, no 3D structure required. Like Foldseek, STEAM is built on the [MMseqs2](https://github.com/soedinglab/MMseqs2) framework.
 
 ## Requirements
 
