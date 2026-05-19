@@ -41,16 +41,18 @@ int teasearch(int argc, const char **argv, const Command &command) {
     par.scoringMatrixFile = MultiParam<NuclAA<std::string>>(NuclAA<std::string>(par.teaMatrixFile, par.teaMatrixFile));
     cmd.addVariable("PREFILTER_PAR", par.createParameterString(par.teaprefilter).c_str());
 
-    // Exhaustive prefilter: disable diagonal scoring, lower k, max sensitivity
+    // Exhaustive search: mirror mmseqs2's Search.cpp logic.
+    // teasearch.sh's fake_pref creates a synthetic prefilter that pairs every
+    // query with every target, so the k-mer prefilter is bypassed entirely.
+    // We still adjust covMode / maxResListLen / evalThr the same way mmseqs
+    // does so alignment-stage filtering behaves correctly on the all-pairs
+    // input.
     if (par.exhaustiveSearch) {
-        par.diagonalScoring = 0;
-        par.minDiagScoreThr = 0;
-        par.kmerSize = 5;
-        par.spacedKmer = 0;
-        par.spacedKmerPattern = "";
-        par.sensitivity = 7.5;
-        par.maxResListLen = 100000;
-        cmd.addVariable("EXHAUSTIVE_PREFILTER_PAR", par.createParameterString(par.teaprefilter).c_str());
+        const size_t queryDbSize  = FileUtil::countLines(par.db1Index.c_str());
+        const size_t targetDbSize = FileUtil::countLines(par.db2Index.c_str());
+        par.covMode = Util::swapCoverageMode(par.covMode);
+        par.maxResListLen = std::max((size_t)300, queryDbSize);
+        par.evalThr *= ((float) queryDbSize) / targetDbSize;
     }
 
     // Restore original --sub-mat so rescorediagonal and alignment use the AA matrix (e.g. BLOSUM62),

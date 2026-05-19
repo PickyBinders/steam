@@ -8,12 +8,39 @@ notExists() {
 	[ ! -f "$1" ]
 }
 
-# 1. Prefilter (k-mer matching on TEA sequences) or exhaustive all-pairs
+abspath() {
+    if [ -d "$1" ]; then
+        (cd "$1"; pwd)
+    elif [ -f "$1" ]; then
+        if [ -z "${1##*/*}" ]; then
+            echo "$(cd "${1%/*}"; pwd)/${1##*/}"
+        else
+            echo "$(pwd)/$1"
+        fi
+    elif [ -d "$(dirname "$1")" ]; then
+        echo "$(cd "$(dirname "$1")"; pwd)/$(basename "$1")"
+    fi
+}
+
+# Build a synthetic prefilter result that pairs every query with every target.
+# Borrowed from mmseqs's blastp.sh; the "data" file is a symlink to the
+# target's .index so every query row references the same all-targets payload.
+fake_pref() {
+    QDB="$1"
+    TDB="$2"
+    RES="$3"
+    ln -s "$(abspath "${TDB}.index")" "${RES}"
+    INDEX_SIZE="$(wc -c < "${TDB}.index")"
+    awk -v size="$INDEX_SIZE" '{ print $1"\t0\t"size; }' "${QDB}.index" > "${RES}.index"
+    awk 'BEGIN { printf("%c%c%c%c",7,0,0,0); exit; }' > "${RES}.dbtype"
+}
+
+# 1. Prefilter (k-mer matching on TEA sequences) or true exhaustive all-pairs
 if notExists "${TMP_PATH}/pref.dbtype"; then
     if [ -n "${EXHAUSTIVE}" ]; then
-        # shellcheck disable=SC2086
-        $RUNNER "$MMSEQS" prefilter "${QUERY}" "${TARGET}${INDEXEXT}" "${TMP_PATH}/pref" ${EXHAUSTIVE_PREFILTER_PAR} \
-            || fail "Exhaustive prefilter step died"
+        # True all-vs-all: synthetic prefilter DB pairing every (query, target).
+        fake_pref "${QUERY}" "${TARGET}${INDEXEXT}" "${TMP_PATH}/pref" \
+            || fail "Exhaustive fake_pref step died"
     else
         # shellcheck disable=SC2086
         $RUNNER "$MMSEQS" prefilter "${QUERY}" "${TARGET}${INDEXEXT}" "${TMP_PATH}/pref" ${PREFILTER_PAR} \
