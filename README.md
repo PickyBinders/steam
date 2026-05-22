@@ -44,19 +44,58 @@ steam easy-search query_tea.fasta query_aa.fasta \
                    result.m8 tmp
 ```
 
+Useful flags:
+
+| Flag | Default | Notes |
+|-----------|---------|-------------|
+| `-e` | 100 | E-value threshold |
+| `--max-seqs` | 2000 | Maximum results per query from prefiltering |
+
+### 3. Cluster
+
+`easy-cluster` runs cascaded clustering (sensitive) and `easy-linclust` runs linear-time clustering (faster, less sensitive). Both take paired TEA/AA FASTAs:
+
+```bash
+# Cascaded clustering
+steam easy-cluster proteins_tea.fasta proteins_aa.fasta clusterResult tmp
+
+# Linear-time clustering (large datasets)
+steam easy-linclust proteins_tea.fasta proteins_aa.fasta clusterResult tmp
+```
+
+Outputs three files alongside `clusterResult`:
+
+- `clusterResult_cluster.tsv` — `<representative>	<member>` adjacency list
+- `clusterResult_rep_seq.fasta` — one AA sequence per cluster representative
+- `clusterResult_all_seqs.fasta` — FASTA grouped by cluster
+
+Useful flags:
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--min-seq-id` | 0 | Minimum sequence identity for cluster members |
+| `-c` | 0.8 | Minimum coverage |
+| `--cov-mode` | 0 | 0=bidirectional, 1=target, 2=query |
+| `--cluster-reassign` | off | Cascaded only: corrects criteria-violations from cascaded merging |
+| `--single-step-cluster` | off | Cascaded only: skip cascading, single pass |
+
 ## Commands
 
 | Command | Description |
 |---------|-------------|
 | `easy-search` | Search FASTA pairs against FASTA pairs or a pre-built database |
+| `easy-cluster` | Cluster paired TEA/AA FASTAs (cascaded, sensitive) |
+| `easy-linclust` | Cluster paired TEA/AA FASTAs (linear-time, faster) |
 | `createdb` | Create a STEAM database from paired TEA/AA FASTA files |
 | `search` | Search pre-built databases (faster for repeated searches) |
+| `cluster` | Cluster a pre-built database (cascaded) |
+| `linclust` | Cluster a pre-built database (linear-time) |
 | `convertalis` | Convert alignment results to various output formats |
-| `tearescorediagonal` | Ungapped TEA+AA diagonal rescoring |
+| `createsubdb` | Subset a STEAM database (keeps `_aa` companion in sync) |
 
 ## Database workflow
 
-For searching the same target database multiple times, pre-build it:
+For searching or clustering the same database multiple times, pre-build it:
 
 ```bash
 # Create database (one time)
@@ -64,14 +103,10 @@ steam createdb target_tea.fasta target_aa.fasta targetDB
 
 # Search against pre-built database (fast, repeatable)
 steam easy-search query_tea.fasta query_aa.fasta targetDB result.m8 tmp
+
+# Cluster the pre-built database
+steam cluster targetDB clusterDB tmp
 ```
-
-## Key parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `-e` | 100 | E-value threshold |
-| `--max-seqs` | 2000 | Maximum results per query from prefiltering |
 
 ## Output format
 
