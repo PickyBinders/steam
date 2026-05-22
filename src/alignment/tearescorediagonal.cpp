@@ -9,8 +9,17 @@
 #include "DistanceCalculator.h"
 #include "QueryMatcher.h"
 #include "FastSort.h"
-
 #include <cmath>
+
+// Reuse mmseqs's parsePrecisionLib via extern (no `static` in upstream).
+extern float parsePrecisionLib(const std::string &scoreFile, double targetSeqid, double targetCov, double targetPrecision);
+
+// Pull in the precision-library data. Wrap in an anonymous namespace so the
+// non-static `_lib_len` does not collide with mmseqs's own definition.
+namespace {
+#include "CovSeqidQscPercMinDiag.lib.h"
+#include "CovSeqidQscPercMinDiagTargetCov.lib.h"
+}
 
 #ifdef OPENMP
 #include <omp.h>
@@ -56,13 +65,42 @@ static Matcher::result_t ungappedAlignTea(Sequence &qSeqAA, Sequence &qSeqTea,
                                            int diagonal, SubstitutionMatrix &subMatAA,
                                            SubstitutionMatrix &subMatTea,
                                            double hitsPerQuery, double m_ln, double c_ln, double pfp,
-                                           std::string &backtrace, const Parameters &par) {
+                                           std::string &backtrace, const Parameters &par,
+                                           float &outScorePerCol) {
     DistanceCalculator::LocalAlignment res;
     float seqId = 0.0;
     backtrace.clear();
     unsigned int minDistToDiagonal = abs(diagonal);
     res.distToDiagonal = minDistToDiagonal;
     res.diagonal = diagonal;
+    outScorePerCol = 0.0f;
+
+    // HAMMING mode (used by linclust's pre-cluster step): no local SW,
+    // just count AA identities along the entire diagonal overlap.
+    if (par.rescoreMode == Parameters::RESCORE_MODE_HAMMING) {
+        unsigned int qOff = (diagonal >= 0) ? minDistToDiagonal : 0;
+        unsigned int tOff = (diagonal >= 0) ? 0 : minDistToDiagonal;
+        if (qOff >= static_cast<unsigned int>(qSeqAA.L) || tOff >= static_cast<unsigned int>(tSeqAA.L)) {
+            return Matcher::result_t(UINT_MAX, 0, 0, 0, 0, 0, 0, 0, 0, qSeqAA.L, 0, 0, tSeqAA.L, backtrace);
+        }
+        unsigned int diagLen = std::min(static_cast<unsigned int>(qSeqAA.L) - qOff,
+                                        static_cast<unsigned int>(tSeqAA.L) - tOff);
+        int idCnt = 0;
+        for (unsigned int i = 0; i < diagLen; i++) {
+            idCnt += (qSeqAA.numSequence[qOff + i] == tSeqAA.numSequence[tOff + i]) ? 1 : 0;
+        }
+        seqId = Util::computeSeqId(par.seqIdMode, idCnt, qSeqAA.L, tSeqAA.L, diagLen);
+        float queryCov = (float)diagLen / (float)qSeqAA.L;
+        float targetCov = (float)diagLen / (float)tSeqAA.L;
+        outScorePerCol = (diagLen > 0) ? ((float)idCnt / (float)diagLen) : 0.0f;
+        if (par.addBacktrace) {
+            backtrace.append(diagLen, 'M');
+        }
+        return Matcher::result_t(tSeqAA.getDbKey(), idCnt, queryCov, targetCov, seqId,
+                                  std::numeric_limits<double>::max(), diagLen,
+                                  qOff, qOff + diagLen - 1, qSeqAA.L,
+                                  tOff, tOff + diagLen - 1, tSeqAA.L, backtrace);
+    }
 
     if (diagonal >= 0 && minDistToDiagonal < static_cast<unsigned int>(qSeqAA.L)) {
         unsigned int minSeqLen = std::min(static_cast<unsigned int>(tSeqAA.L),
@@ -113,6 +151,7 @@ static Matcher::result_t ungappedAlignTea(Sequence &qSeqAA, Sequence &qSeqTea,
 
     float queryCov = (std::min((unsigned int)qSeqAA.L, (unsigned int)qEndPos) - (unsigned int)qStartPos + 1) / (float)qSeqAA.L;
     float targetCov = (std::min((unsigned int)tSeqAA.L, (unsigned int)dbEndPos) - (unsigned int)dbStartPos + 1) / (float)tSeqAA.L;
+    outScorePerCol = (res.diagonalLen > 0) ? ((float)res.score / (float)res.diagonalLen) : 0.0f;
 
     double evalue = computeEvalue(res.score, hitsPerQuery, m_ln, c_ln, pfp);
 
@@ -208,6 +247,20 @@ int tearescorediagonal(int argc, const char **argv, const Command &command) {
     const double loglinearC_ln = par.loglinearC * 2.302585093;
     const double pfp = par.pFP;
 
+    // --filter-hits + --rescore-mode: mirror mmseqs's rescorediagonal so the
+    // linclust pipeline's per-step gating works as documented.
+    float scorePerColThr = 0.0f;
+    if (par.filterHits) {
+        if (par.rescoreMode == Parameters::RESCORE_MODE_HAMMING) {
+            Debug(Debug::WARNING) << "HAMMING distance cannot be used to filter hits; switching to --rescore-mode 1\n";
+            par.rescoreMode = Parameters::RESCORE_MODE_SUBSTITUTION;
+        }
+        std::string libraryString = (par.covMode == Parameters::COV_MODE_BIDIRECTIONAL)
+            ? std::string((const char*)CovSeqidQscPercMinDiag_lib, CovSeqidQscPercMinDiag_lib_len)
+            : std::string((const char*)CovSeqidQscPercMinDiagTargetCov_lib, CovSeqidQscPercMinDiagTargetCov_lib_len);
+        scorePerColThr = parsePrecisionLib(libraryString, par.seqIdThr, par.covThr, 0.99);
+    }
+
 #pragma omp parallel
     {
         unsigned int thread_idx = 0;
@@ -261,20 +314,25 @@ int tearescorediagonal(int argc, const char **argv, const Command &command) {
                         continue;
                     }
 
+                    float currScorePerCol = 0.0f;
                     Matcher::result_t res = ungappedAlignTea(qSeqAA, qSeqTea,
                                                               tSeqAA, tSeqTea,
                                                               static_cast<short>(prefHit.diagonal),
                                                               subMatAA, subMatTea, hitsPerQuery,
                                                               loglinearM_ln, loglinearC_ln, pfp,
-                                                              backtrace, par);
+                                                              backtrace, par, currScorePerCol);
 
                     if (res.dbKey == UINT_MAX) {
                         rejected++;
                         continue;
                     }
 
-
-                    if (Alignment::checkCriteria(res, isIdentity, par.evalThr, par.seqIdThr, par.alnLenThr, par.covMode, par.covThr)) {
+                    // mmseqs's --filter-hits gate: accept iff score-per-col passes
+                    // the precision-library threshold, OR all of the existing
+                    // (covThr / seqIdThr / alnLenThr / evalThr) criteria pass.
+                    bool passedFilterHits = (par.filterHits && currScorePerCol >= scorePerColThr);
+                    if (passedFilterHits ||
+                        Alignment::checkCriteria(res, isIdentity, par.evalThr, par.seqIdThr, par.alnLenThr, par.covMode, par.covThr)) {
                         alignmentResult.emplace_back(res);
                         passedNum++;
                         rejected = 0;
