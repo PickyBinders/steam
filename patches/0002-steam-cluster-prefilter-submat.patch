@@ -1,0 +1,100 @@
+diff --git a/src/workflow/Cluster.cpp b/src/workflow/Cluster.cpp
+index 6293eb4a..aa4563d4 100644
+--- a/src/workflow/Cluster.cpp
++++ b/src/workflow/Cluster.cpp
+@@ -11,6 +11,17 @@
+ 
+ #include <cassert>
+ 
++// STEAM patch: when MMSEQS_PREFILTER_SUBMAT is set, swap par.scoringMatrixFile
++// around prefilter param string generation so the k-mer prefilter uses the TEA
++// matrix while gapped alignment keeps the AA matrix.
++static const char *steamPrefilterSubMat() {
++    return getenv("MMSEQS_PREFILTER_SUBMAT");
++}
++#define STEAM_SWAP_PREFILTER_SUBMAT(par, saved) \
++    do { const char *_m = steamPrefilterSubMat(); if (_m) { saved = par.scoringMatrixFile; par.scoringMatrixFile = MultiParam<NuclAA<std::string>>(NuclAA<std::string>(_m, _m)); } } while (0)
++#define STEAM_RESTORE_PREFILTER_SUBMAT(par, saved) \
++    do { if (steamPrefilterSubMat()) { par.scoringMatrixFile = saved; } } while (0)
++
+ void setWorkflowDefaults(Parameters *p) {
+     p->spacedKmer = true;
+     p->covThr = 0.8;
+@@ -197,7 +208,10 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
+         par.minDiagScoreThr = 0;
+         par.diagonalScoring = 0;
+         par.compBiasCorrection = 0;
++        MultiParam<NuclAA<std::string>> _savedSubMat0;
++        STEAM_SWAP_PREFILTER_SUBMAT(par, _savedSubMat0);
+         cmd.addVariable("PREFILTER0_PAR", par.createParameterString(par.prefilter).c_str());
++        STEAM_RESTORE_PREFILTER_SUBMAT(par, _savedSubMat0);
+         if (isUngappedMode) {
+             par.rescoreMode = Parameters::RESCORE_MODE_ALIGNMENT;
+             cmd.addVariable("ALIGNMENT0_PAR", par.createParameterString(par.rescorediagonal).c_str());
+@@ -213,7 +227,10 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
+         for (int step = 1; step < par.clusterSteps; step++) {
+             par.sensitivity = 1.0 + sensStepSize * step;
+ 
++            MultiParam<NuclAA<std::string>> _savedSubMatI;
++            STEAM_SWAP_PREFILTER_SUBMAT(par, _savedSubMatI);
+             cmd.addVariable(std::string("PREFILTER" + SSTR(step) + "_PAR").c_str(), par.createParameterString(par.prefilter).c_str());
++            STEAM_RESTORE_PREFILTER_SUBMAT(par, _savedSubMatI);
+             if (isUngappedMode) {
+                 par.rescoreMode = Parameters::RESCORE_MODE_ALIGNMENT;
+                 cmd.addVariable(std::string("ALIGNMENT" + SSTR(step) + "_PAR").c_str(), par.createParameterString(par.rescorediagonal).c_str());
+@@ -233,7 +250,10 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
+         int swapedCovMode = Util::swapCoverageMode(par.covMode);
+         int tmpCovMode = par.covMode;
+         par.covMode = swapedCovMode;
++        MultiParam<NuclAA<std::string>> _savedSubMatR;
++        STEAM_SWAP_PREFILTER_SUBMAT(par, _savedSubMatR);
+         cmd.addVariable("PREFILTER_REASSIGN_PAR", par.createParameterString(par.prefilter).c_str());
++        STEAM_RESTORE_PREFILTER_SUBMAT(par, _savedSubMatR);
+         par.covMode = tmpCovMode;
+         cmd.addVariable("ALIGNMENT_REASSIGN_PAR", par.createParameterString(par.align).c_str());
+         cmd.addVariable("MERGEDBS_PAR", par.createParameterString(par.mergedbs).c_str());
+@@ -250,7 +270,10 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
+         cmd.addVariable("DETECTREDUNDANCY_PAR", par.createParameterString(par.clusthash).c_str());
+         par.alphabetSize = alphabetSize;
+         par.seqIdThr = seqIdThr;
++        MultiParam<NuclAA<std::string>> _savedSubMatS;
++        STEAM_SWAP_PREFILTER_SUBMAT(par, _savedSubMatS);
+         cmd.addVariable("PREFILTER_PAR", par.createParameterString(par.prefilter).c_str());
++        STEAM_RESTORE_PREFILTER_SUBMAT(par, _savedSubMatS);
+         if (isUngappedMode) {
+             cmd.addVariable("ALIGNMENT_PAR", par.createParameterString(par.rescorediagonal).c_str());
+         } else {
+diff --git a/src/workflow/Linclust.cpp b/src/workflow/Linclust.cpp
+index 5a5dedce..831a2cbe 100644
+--- a/src/workflow/Linclust.cpp
++++ b/src/workflow/Linclust.cpp
+@@ -9,6 +9,18 @@
+ 
+ #include <cassert>
+ 
++// STEAM patch: when MMSEQS_PREFILTER_SUBMAT is set, swap par.scoringMatrixFile
++// around kmermatcher param string generation only. The hamming / ungapped /
++// gapped alignment steps run steam's tearescorediagonal / teaalign shadows,
++// which already read --matcha separately, so they keep the AA sub-mat.
++static const char *steamPrefilterSubMat() {
++    return getenv("MMSEQS_PREFILTER_SUBMAT");
++}
++#define STEAM_SWAP_PREFILTER_SUBMAT(par, saved) \
++    do { const char *_m = steamPrefilterSubMat(); if (_m) { saved = par.scoringMatrixFile; par.scoringMatrixFile = MultiParam<NuclAA<std::string>>(NuclAA<std::string>(_m, _m)); } } while (0)
++#define STEAM_RESTORE_PREFILTER_SUBMAT(par, saved) \
++    do { if (steamPrefilterSubMat()) { par.scoringMatrixFile = saved; } } while (0)
++
+ void setLinclustWorkflowDefaults(Parameters *p) {
+     p->spacedKmer = false;
+     p->covThr = 0.8;
+@@ -93,7 +105,10 @@ int linclust(int argc, const char **argv, const Command& command) {
+     cmd.addVariable("ALIGN_MODULE", isUngappedMode ? "rescorediagonal" : "align");
+     // filter by diagonal in case of AA (do not filter for nucl, profiles, ...)
+     cmd.addVariable("FILTER", Parameters::isEqualDbtype(dbType, Parameters::DBTYPE_AMINO_ACIDS) ? "1" : NULL);
++    MultiParam<NuclAA<std::string>> _savedSubMatK;
++    STEAM_SWAP_PREFILTER_SUBMAT(par, _savedSubMatK);
+     cmd.addVariable("KMERMATCHER_PAR", par.createParameterString(par.kmermatcher).c_str());
++    STEAM_RESTORE_PREFILTER_SUBMAT(par, _savedSubMatK);
+     cmd.addVariable("VERBOSITY", par.createParameterString(par.onlyverbosity).c_str());
+     cmd.addVariable("VERBOSITYANDCOMPRESS", par.createParameterString(par.threadsandcompression).c_str());
+ 

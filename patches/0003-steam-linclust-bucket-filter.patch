@@ -1,0 +1,88 @@
+diff --git a/src/linclust/kmermatcher.cpp b/src/linclust/kmermatcher.cpp
+index 8becbf70..2a86c6e0 100644
+--- a/src/linclust/kmermatcher.cpp
++++ b/src/linclust/kmermatcher.cpp
+@@ -520,13 +520,70 @@ size_t assignGroup(KmerPosition<T> *hashSeqPair, size_t splitKmerCount, bool inc
+     T queryLen=hashSeqPair[0].seqLen;
+     bool repIsReverse = false;
+     T repSeq_i_pos = hashSeqPair[0].pos;
++
++    // STEAM patch: drop k-mers shared by an unusually large number of
++    // sequences ("noisy k-mers"). Same idea as the prefilter
++    // steam-bucket-filter: pick the bucket-size threshold that yields the top
++    // STEAM_BUCKET_COVERAGE_PCT % cumulative coverage of total k-mer-entries
++    // in this split, then refuse to emit pairs from any bucket larger than it.
++    // Default 20%; set STEAM_BUCKET_COVERAGE_PCT=0 to disable.
++    size_t steamMaxBucket = 0;
++    {
++        const char *env = getenv("STEAM_BUCKET_COVERAGE_PCT");
++        double steamCoveragePct = env ? atof(env) : 20.0;
++        if (steamCoveragePct > 0.0 && splitKmerCount > 0) {
++            std::vector<size_t> bucketSizes;
++            size_t totalEntries = 0;
++            size_t prevH = hashSeqPair[0].kmer;
++            if (TYPE == Parameters::DBTYPE_NUCLEOTIDES) prevH = BIT_SET(prevH, 63);
++            size_t curSize = 0;
++            for (size_t i = 0; i < splitKmerCount; i++) {
++                size_t k = hashSeqPair[i].kmer;
++                if (k == SIZE_T_MAX) break;
++                if (TYPE == Parameters::DBTYPE_NUCLEOTIDES) k = BIT_SET(k, 63);
++                if (k != prevH) {
++                    if (curSize > 0) { bucketSizes.push_back(curSize); totalEntries += curSize; }
++                    curSize = 0;
++                    prevH = k;
++                }
++                curSize++;
++            }
++            if (curSize > 0) { bucketSizes.push_back(curSize); totalEntries += curSize; }
++            if (!bucketSizes.empty()) {
++                std::sort(bucketSizes.begin(), bucketSizes.end(), std::greater<size_t>());
++                size_t target = static_cast<size_t>(totalEntries * steamCoveragePct / 100.0);
++                size_t cum = 0;
++                for (size_t s : bucketSizes) {
++                    cum += s;
++                    if (cum >= target) { steamMaxBucket = s; break; }
++                }
++                const size_t kSteamBucketFloor = 10;
++                if (steamMaxBucket > 0 && steamMaxBucket < kSteamBucketFloor) steamMaxBucket = 0;
++                Debug(Debug::INFO) << "[steam-linclust-bucket-filter] coverage="
++                    << steamCoveragePct << "% -> bucket threshold " << steamMaxBucket
++                    << " (entries=" << totalEntries
++                    << " buckets=" << bucketSizes.size() << ")\n";
++            }
++        }
++    }
++    size_t steamSkippedBuckets = 0;
+     for (size_t elementIdx = 0; elementIdx < splitKmerCount+1; elementIdx++) {
+         size_t currKmer = hashSeqPair[elementIdx].kmer;
+         if(TYPE == Parameters::DBTYPE_NUCLEOTIDES){
+             currKmer = BIT_SET(currKmer, 63);
+         }
+         if (prevHash != currKmer) {
+-            for (size_t i = prevHashStart; i < elementIdx; i++) {
++            // STEAM patch: skip emitting any pairs for buckets larger than threshold.
++            // Mark all entries in the bucket as SIZE_T_MAX so the downstream write step
++            // drops them (matches what the in-bucket compaction does for emitted pairs).
++            bool steamSkipBucket = (steamMaxBucket > 0 && prevSetSize > steamMaxBucket);
++            if (steamSkipBucket) {
++                steamSkippedBuckets++;
++                for (size_t i = prevHashStart; i < elementIdx; i++) {
++                    hashSeqPair[i].kmer = SIZE_T_MAX;
++                }
++            }
++            for (size_t i = prevHashStart; i < elementIdx && !steamSkipBucket; i++) {
+                 // skip target sequences if weight > weightThr
+                 if(i > prevHashStart && sequenceWeights != NULL
+                    && sequenceWeights->getWeightById(hashSeqPair[i].id) > weightThr)
+@@ -621,6 +678,11 @@ size_t assignGroup(KmerPosition<T> *hashSeqPair, size_t splitKmerCount, bool inc
+         }
+     }
+ 
++    if (steamMaxBucket > 0) {
++        Debug(Debug::INFO) << "[steam-linclust-bucket-filter] skipped "
++            << steamSkippedBuckets << " noisy buckets in this split\n";
++    }
++
+     return writePos;
+ }
+ 
