@@ -4,8 +4,8 @@
 
 const char* binary_name = "steam";
 const char* tool_name = "steam";
-const char* tool_introduction = "STEAM (Search with TEA against Many)";
-const char* main_author = "Janani Durairaj";
+const char* tool_introduction = "STEAM (Search with TEA against Many)\n\nPlease cite: https://doi.org/10.1101/2025.11.27.690975";
+const char* main_author = "Lorenzo Pantolini, Gabriel Studer, Laura Engist, Ieva Pudžiuvelytė, Florian Pommerening, Andrew Mark Waterhouse, Gerardo Tauriello, Martin Steinegger, Torsten Schwede, Janani Durairaj";
 const char* show_extended_help = "1";
 const char* show_bash_info = NULL;
 const char* index_version_compatible = "st1";
