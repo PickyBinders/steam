@@ -3,6 +3,8 @@ include(MMseqsResourceCompiler)
 set(COMPILED_RESOURCES
         teasearch.sh
         easyteasearch.sh
+        createteasubdb.sh
+        easyteacluster.sh
         matcha.out
         )
 
