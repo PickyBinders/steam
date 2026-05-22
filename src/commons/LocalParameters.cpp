@@ -1,8 +1,6 @@
 #include "LocalParameters.h"
 #include "matcha.out.h"
 
-#include <algorithm>
-
 LocalParameters::LocalParameters() :
         Parameters(),
         PARAM_TEA_WEIGHT(PARAM_TEA_WEIGHT_ID, "--aa-weight", "AA weight",
@@ -61,8 +59,9 @@ LocalParameters::LocalParameters() :
     teaalign = combineList(align, {&PARAM_TEA_WEIGHT, &PARAM_TEA_MAT,
                                     &PARAM_LOGLINEAR_M, &PARAM_LOGLINEAR_C, &PARAM_P_FP});
 
-    // tearescorediagonal = align + TEA-specific params (for ungapped diagonal rescoring)
-    tearescorediagonal = combineList(align, {&PARAM_TEA_WEIGHT, &PARAM_TEA_MAT});
+    // tearescorediagonal = mmseqs rescorediagonal + align + TEA-specific params.
+    tearescorediagonal = combineList(rescorediagonal, align);
+    tearescorediagonal = combineList(tearescorediagonal, {&PARAM_TEA_WEIGHT, &PARAM_TEA_MAT});
 
     // teaprefilter = base prefilter list (for the steam-specific prefilter alias)
     teaprefilter = prefilter;
@@ -75,30 +74,4 @@ LocalParameters::LocalParameters() :
     // easyteasearch = teasearch + createteadb + convertalis
     easyteasearchworkflow = combineList(teasearchworkflow, createteadb);
     easyteasearchworkflow = combineList(easyteasearchworkflow, convertalignments);
-
-    // Hide MMseqs2 flags that STEAM doesn't currently use.
-    const std::vector<MMseqsParameter*> unused = {
-        &PARAM_PCA, &PARAM_PCB,                       // profile pseudo-counts
-        &PARAM_CORR_SCORE_WEIGHT,                     // profile correlation weight
-        &PARAM_REALIGN, &PARAM_REALIGN_SCORE_BIAS,
-        &PARAM_REALIGN_MAX_SEQS,                      // STEAM never re-aligns
-        &PARAM_ALT_ALIGNMENT,                         // alternative alignments
-        &PARAM_WRAPPED_SCORING,                       // circular/DNA scoring
-        &PARAM_TARGET_SEARCH_MODE,                    // unused prefilter mode
-        &PARAM_ALPH_SIZE,                             // TEA alphabet is fixed
-        &PARAM_TAXON_LIST,                            // no taxonomy DB
-        &PARAM_MASK_PROBABILTY, &PARAM_MASK_LOWER_CASE,
-        &PARAM_MASK_N_REPEAT,                         // masking forced off
-    };
-    auto drop = [&unused](std::vector<MMseqsParameter*>& v) {
-        v.erase(std::remove_if(v.begin(), v.end(),
-            [&](MMseqsParameter* p) {
-                return std::find(unused.begin(), unused.end(), p) != unused.end();
-            }), v.end());
-    };
-    drop(teaalign);
-    drop(tearescorediagonal);
-    drop(teaprefilter);
-    drop(teasearchworkflow);
-    drop(easyteasearchworkflow);
 }

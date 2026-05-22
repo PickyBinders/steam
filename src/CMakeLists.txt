@@ -1,4 +1,5 @@
 include_directories(commons)
+include_directories(.)
 add_subdirectory(alignment)
 add_subdirectory(commons)
 add_subdirectory(util)
