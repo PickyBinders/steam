@@ -2,6 +2,10 @@
 
 STEAM is heavily adapted from [Foldseek](https://github.com/steineggerlab/foldseek) (Van Kempen et al., Nature Biotechnology 2024), replacing Foldseek's 3Di structural alphabet with [TEA](https://github.com/PickyBinders/tea). This means STEAM can be applied to any protein sequence, no 3D structure required. Like Foldseek, STEAM is built on the [MMseqs2](https://github.com/soedinglab/MMseqs2) framework.
 
+If you have just a few proteins, consider using the [STEAM web-server](https://pickybinders.org/tea/steam) instead.
+
+See [the preprint](https://doi.org/10.1101/2025.11.27.690975) to learn more.
+
 ## Requirements
 
 - CMake >= 3.15
