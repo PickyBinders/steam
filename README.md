@@ -54,6 +54,7 @@ Useful flags:
 |-----------|---------|-------------|
 | `-e` | 100 | E-value threshold |
 | `--max-seqs` | 2000 | Maximum results per query from prefiltering |
+| `--min-seq-id` | 0 | Minimum **amino acid** sequence identity |
 
 ### 3. Cluster
 
@@ -77,8 +78,9 @@ Useful flags:
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--min-seq-id` | 0 | Minimum sequence identity for cluster members |
+| `--min-seq-id` | 0 | Minimum **amino acid** sequence identity for cluster members |
 | `-c` | 0.8 | Minimum coverage |
+| `-e` | 100 | E-value threshold |
 | `--cov-mode` | 0 | 0=bidirectional, 1=target, 2=query |
 | `--cluster-reassign` | off | Cascaded only: corrects criteria-violations from cascaded merging |
 | `--single-step-cluster` | off | Cascaded only: skip cascading, single pass |
