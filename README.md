@@ -2,6 +2,10 @@
 
 STEAM is heavily adapted from [Foldseek](https://github.com/steineggerlab/foldseek) (Van Kempen et al., Nature Biotechnology 2024), replacing Foldseek's 3Di structural alphabet with [TEA](https://github.com/PickyBinders/tea). This means STEAM can be applied to any protein sequence, no 3D structure required. Like Foldseek, STEAM is built on the [MMseqs2](https://github.com/soedinglab/MMseqs2) framework.
 
+If you have just a few proteins, consider using the [STEAM web-server](https://pickybinders.org/tea/steam) instead.
+
+See [the preprint](https://doi.org/10.1101/2025.11.27.690975) to learn more.
+
 ## Requirements
 
 - CMake >= 3.15
@@ -50,6 +54,7 @@ Useful flags:
 |-----------|---------|-------------|
 | `-e` | 100 | E-value threshold |
 | `--max-seqs` | 2000 | Maximum results per query from prefiltering |
+| `--min-seq-id` | 0 | Minimum **amino acid** sequence identity |
 
 ### 3. Cluster
 
@@ -73,8 +78,9 @@ Useful flags:
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--min-seq-id` | 0 | Minimum sequence identity for cluster members |
+| `--min-seq-id` | 0 | Minimum **amino acid** sequence identity for cluster members |
 | `-c` | 0.8 | Minimum coverage |
+| `-e` | 100 | E-value threshold |
 | `--cov-mode` | 0 | 0=bidirectional, 1=target, 2=query |
 | `--cluster-reassign` | off | Cascaded only: corrects criteria-violations from cascaded merging |
 | `--single-step-cluster` | off | Cascaded only: skip cascading, single pass |
