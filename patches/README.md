@@ -42,6 +42,9 @@ Driven from STEAM by the `teacluster` / `teaLinclust` wrappers in
 "matcha.out", 1)` before delegating to upstream `clusteringworkflow()` /
 `linclust()`.
 
+If `STEAM_CLUSTER_DEFAULTS=1` (default), `setWorkflowDefaults` in `Cluster.cpp` switches to
+foldseek-style defaults (`--max-seqs 1000` and `-e 0.01`).
+
 ### `0003-steam-linclust-bucket-filter.patch`
 
 **Target:** `src/linclust/kmermatcher.cpp::assignGroup`.
@@ -57,3 +60,6 @@ Same environment variable as `0001`: `STEAM_BUCKET_COVERAGE_PCT` (default
 `20`; set `0` to disable). A floor of 10 entries per bucket prevents the
 filter from triggering when the bucket-size distribution is too uniform for
 the top-X% concept to be meaningful.
+
+If `STEAM_CLUSTER_DEFAULTS=1` (default), `setLinclustWorkflowDefaults` in `Linclust.cpp` switches to
+foldseek-style defaults (`-e 0.01` and `kmersPerSequence 300`).

@@ -26,6 +26,7 @@
 static void setupTeaEnv() {
     LocalParameters &par = LocalParameters::getLocalInstance();
     setenv("MMSEQS_PREFILTER_SUBMAT", par.teaMatrixFile.empty() ? "matcha.out" : par.teaMatrixFile.c_str(), 1);
+    setenv("STEAM_CLUSTER_DEFAULTS", "1", 1);
 }
 
 int teacluster(int argc, const char **argv, const Command &command) {

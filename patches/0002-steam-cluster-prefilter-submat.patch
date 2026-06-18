@@ -1,8 +1,8 @@
 diff --git a/src/workflow/Cluster.cpp b/src/workflow/Cluster.cpp
-index 6293eb4a..aa4563d4 100644
+index 6293eb4a..719061d3 100644
 --- a/src/workflow/Cluster.cpp
 +++ b/src/workflow/Cluster.cpp
-@@ -11,6 +11,17 @@
+@@ -11,12 +11,29 @@
  
  #include <cassert>
  
@@ -20,7 +20,19 @@ index 6293eb4a..aa4563d4 100644
  void setWorkflowDefaults(Parameters *p) {
      p->spacedKmer = true;
      p->covThr = 0.8;
-@@ -197,7 +208,10 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
+     p->evalThr = 0.001;
+     p->alignmentMode = Parameters::ALIGNMENT_MODE_SCORE_COV_SEQID;
+     p->maxResListLen = 20;
++    // Mirrors foldseek's setStructureClusterWorkflowDefaults.
++    if (getenv("STEAM_CLUSTER_DEFAULTS")) {
++        p->evalThr = 0.01;
++        p->maxResListLen = 1000;
++        p->kmersPerSequence = 300;
++    }
+ }
+ 
+ float setAutomaticThreshold(float seqId) {
+@@ -197,7 +214,10 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
          par.minDiagScoreThr = 0;
          par.diagonalScoring = 0;
          par.compBiasCorrection = 0;
@@ -31,7 +43,7 @@ index 6293eb4a..aa4563d4 100644
          if (isUngappedMode) {
              par.rescoreMode = Parameters::RESCORE_MODE_ALIGNMENT;
              cmd.addVariable("ALIGNMENT0_PAR", par.createParameterString(par.rescorediagonal).c_str());
-@@ -213,7 +227,10 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
+@@ -213,7 +233,10 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
          for (int step = 1; step < par.clusterSteps; step++) {
              par.sensitivity = 1.0 + sensStepSize * step;
  
@@ -42,7 +54,7 @@ index 6293eb4a..aa4563d4 100644
              if (isUngappedMode) {
                  par.rescoreMode = Parameters::RESCORE_MODE_ALIGNMENT;
                  cmd.addVariable(std::string("ALIGNMENT" + SSTR(step) + "_PAR").c_str(), par.createParameterString(par.rescorediagonal).c_str());
-@@ -233,7 +250,10 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
+@@ -233,7 +256,10 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
          int swapedCovMode = Util::swapCoverageMode(par.covMode);
          int tmpCovMode = par.covMode;
          par.covMode = swapedCovMode;
@@ -53,7 +65,7 @@ index 6293eb4a..aa4563d4 100644
          par.covMode = tmpCovMode;
          cmd.addVariable("ALIGNMENT_REASSIGN_PAR", par.createParameterString(par.align).c_str());
          cmd.addVariable("MERGEDBS_PAR", par.createParameterString(par.mergedbs).c_str());
-@@ -250,7 +270,10 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
+@@ -250,7 +276,10 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
          cmd.addVariable("DETECTREDUNDANCY_PAR", par.createParameterString(par.clusthash).c_str());
          par.alphabetSize = alphabetSize;
          par.seqIdThr = seqIdThr;
@@ -65,7 +77,7 @@ index 6293eb4a..aa4563d4 100644
              cmd.addVariable("ALIGNMENT_PAR", par.createParameterString(par.rescorediagonal).c_str());
          } else {
 diff --git a/src/workflow/Linclust.cpp b/src/workflow/Linclust.cpp
-index 5a5dedce..831a2cbe 100644
+index 5a5dedce..db901940 100644
 --- a/src/workflow/Linclust.cpp
 +++ b/src/workflow/Linclust.cpp
 @@ -9,6 +9,18 @@
