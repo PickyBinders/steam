@@ -1,0 +1,424 @@
+Unable to open session log file "/scicore/home/schwede/durair0000/.cache/starship/session_1437131349968888.log": Os { code: 30, kind: ReadOnlyFilesystem, message: "Read-only file system" }!
+diff --git a/src/prefiltering/Prefiltering.cpp b/src/prefiltering/Prefiltering.cpp
+index 92d957f3..53886863 100644
+--- a/src/prefiltering/Prefiltering.cpp
++++ b/src/prefiltering/Prefiltering.cpp
+@@ -13,6 +13,8 @@
+ #include "Parameters.h"
+ #include "MemoryMapped.h"
+ #include "FastSort.h"
++#include <cstdlib>
++#include <cstring>
+ #include <sys/mman.h>
+ 
+ #ifdef OPENMP
+@@ -56,6 +58,17 @@ Prefiltering::Prefiltering(const std::string &queryDB,
+         threads(static_cast<unsigned int>(par.threads)),
+         compressed(par.compressed) {
+     sameQTDB = isSameQTDB();
++    externalAuxScoring = (getenv("STEAM_UNGAPPED_AA") != NULL &&
++                          strcmp(getenv("STEAM_UNGAPPED_AA"), "0") != 0);
++    qdbrExternalAux = NULL;
++    tdbrExternalAux = NULL;
++    sequenceLookupExternalAux = NULL;
++    externalAuxSubMat = NULL;
++
++    if (externalAuxScoring && diagonalScoring == false) {
++        Debug(Debug::ERROR) << "Combined TEA+AA ungapped scoring requires --diag-score 1\n";
++        EXIT(EXIT_FAILURE);
++    }
+ 
+     // init the substitution matrices
+     switch (querySeqType & Parameters::DBTYPE_MASK) {
+@@ -66,7 +79,8 @@ Prefiltering::Prefiltering(const std::string &queryDB,
+             break;
+         case Parameters::DBTYPE_AMINO_ACIDS:
+             kmerSubMat = getSubstitutionMatrix(seedScoringMatrixFile, par.alphabetSize, 8.0, false, false);
+-            ungappedSubMat = getSubstitutionMatrix(scoringMatrixFile, par.alphabetSize, 2.0, false, false);
++            ungappedSubMat = getSubstitutionMatrix(scoringMatrixFile, par.alphabetSize,
++                                                   externalAuxScoring ? 1.0 : 2.0, false, false);
+             alphabetSize = kmerSubMat->alphabetSize;
+             break;
+         case Parameters::DBTYPE_HMM_PROFILE:
+@@ -198,6 +212,42 @@ Prefiltering::Prefiltering(const std::string &queryDB,
+         qdbr = new DBReader<unsigned int>(queryDB.c_str(), queryDBIndex.c_str(), threads, DBReader<unsigned int>::USE_INDEX|DBReader<unsigned int>::USE_DATA);
+         qdbr->open(DBReader<unsigned int>::LINEAR_ACCCESS);
+     }
++
++    if (externalAuxScoring) {
++        const std::string queryBase = PrefilteringIndexReader::dbPathWithoutIndex(queryDB);
++        const std::string targetBase = PrefilteringIndexReader::dbPathWithoutIndex(targetDB);
++        const std::string queryAuxDb = queryBase + "_aa";
++        const std::string targetAuxDb = targetBase + "_aa";
++        if (FileUtil::fileExists((queryAuxDb + ".dbtype").c_str()) == false ||
++            FileUtil::fileExists((targetAuxDb + ".dbtype").c_str()) == false) {
++            Debug(Debug::ERROR) << "Combined TEA+AA ungapped scoring requires companion _aa databases\n";
++            EXIT(EXIT_FAILURE);
++        }
++        tdbrExternalAux = new DBReader<unsigned int>(targetAuxDb.c_str(), (targetAuxDb + ".index").c_str(),
++                                                     threads, DBReader<unsigned int>::USE_INDEX | DBReader<unsigned int>::USE_DATA);
++        tdbrExternalAux->open(DBReader<unsigned int>::LINEAR_ACCCESS);
++        if (sameQTDB) {
++            qdbrExternalAux = tdbrExternalAux;
++        } else {
++            qdbrExternalAux = new DBReader<unsigned int>(queryAuxDb.c_str(), (queryAuxDb + ".index").c_str(),
++                                                         threads, DBReader<unsigned int>::USE_INDEX | DBReader<unsigned int>::USE_DATA);
++            qdbrExternalAux->open(DBReader<unsigned int>::LINEAR_ACCCESS);
++        }
++        if (qdbrExternalAux->getSize() != qdbr->getSize() || tdbrExternalAux->getSize() != tdbr->getSize()) {
++            Debug(Debug::ERROR) << "TEA and companion AA databases contain different numbers of sequences\n";
++            EXIT(EXIT_FAILURE);
++        }
++
++        const char *auxMatrixSource = getenv("STEAM_UNGAPPED_AA_SUBMAT");
++        if (auxMatrixSource == NULL || auxMatrixSource[0] == '\0') {
++            Debug(Debug::ERROR) << "Missing STEAM_UNGAPPED_AA_SUBMAT for combined ungapped scoring\n";
++            EXIT(EXIT_FAILURE);
++        }
++        const char *weightString = getenv("STEAM_UNGAPPED_AA_WEIGHT");
++        const float auxWeight = (weightString != NULL) ? static_cast<float>(atof(weightString)) : 1.4f;
++        externalAuxSubMat = new SubstitutionMatrix(auxMatrixSource, auxWeight, -0.2f);
++        Debug(Debug::INFO) << "Combined TEA+AA ungapped diagonal scoring enabled (AA weight " << auxWeight << ")\n";
++    }
+     Debug(Debug::INFO) << "Query database size: " << qdbr->getSize() << " type: " << Parameters::getDbTypeName(querySeqType) << "\n";
+ 
+     setupSplit(*tdbr, alphabetSize - 1, querySeqType,
+@@ -261,6 +311,19 @@ Prefiltering::~Prefiltering() {
+     if (sequenceLookup != NULL) {
+         delete sequenceLookup;
+     }
++    if (sequenceLookupExternalAux != NULL) {
++        delete sequenceLookupExternalAux;
++    }
++
++    if (externalAuxScoring) {
++        if (sameQTDB == false) {
++            qdbrExternalAux->close();
++            delete qdbrExternalAux;
++        }
++        tdbrExternalAux->close();
++        delete tdbrExternalAux;
++        delete externalAuxSubMat;
++    }
+ 
+     tdbr->close();
+     delete tdbr;
+@@ -564,6 +627,34 @@ void Prefiltering::getIndexTable(int split, size_t dbFrom, size_t dbSize) {
+         tdbr->remapData();
+         Debug(Debug::INFO) << "Time for index table init: " << timer.lap() << "\n";
+     }
++    if (externalAuxScoring) {
++        buildExternalAuxLookup(dbFrom, dbSize);
++    }
++}
++
++void Prefiltering::buildExternalAuxLookup(size_t dbFrom, size_t dbSize) {
++    if (sequenceLookupExternalAux != NULL) {
++        delete sequenceLookupExternalAux;
++        sequenceLookupExternalAux = NULL;
++    }
++    const size_t dbTo = std::min(dbFrom + dbSize, tdbrExternalAux->getSize());
++    size_t totalLength = 0;
++    for (size_t id = dbFrom; id < dbTo; id++) {
++        totalLength += tdbrExternalAux->getSeqLen(id);
++    }
++    sequenceLookupExternalAux = new SequenceLookup(dbTo - dbFrom, totalLength);
++    Sequence auxSeq(maxSeqLen, Parameters::DBTYPE_AMINO_ACIDS, externalAuxSubMat, 0, false, false);
++    for (size_t id = dbFrom; id < dbTo; id++) {
++        if (tdbrExternalAux->getDbKey(id) != tdbr->getDbKey(id) ||
++            tdbrExternalAux->getSeqLen(id) != tdbr->getSeqLen(id)) {
++            Debug(Debug::ERROR) << "TEA/AA target database key or length mismatch at sequence "
++                                << tdbr->getDbKey(id) << "\n";
++            EXIT(EXIT_FAILURE);
++        }
++        auxSeq.mapSequence(id - dbFrom, tdbrExternalAux->getDbKey(id),
++                           tdbrExternalAux->getData(id, 0), tdbrExternalAux->getSeqLen(id));
++        sequenceLookupExternalAux->addSequence(&auxSeq);
++    }
+ }
+ 
+ bool Prefiltering::isSameQTDB() {
+@@ -760,6 +851,10 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
+             delete sequenceLookup;
+             sequenceLookup = NULL;
+         }
++        if (sequenceLookupExternalAux != NULL) {
++            delete sequenceLookupExternalAux;
++            sequenceLookupExternalAux = NULL;
++        }
+ 
+         getIndexTable(split, dbFrom, dbSize);
+     } else if (splitMode == Parameters::QUERY_DB_SPLIT) {
+@@ -808,10 +903,14 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
+         thread_idx = static_cast<unsigned int>(omp_get_thread_num());
+ #endif
+         Sequence seq(qdbr->getMaxSeqLen(), querySeqType, kmerSubMat, kmerSize, spacedKmer, aaBiasCorrection, true, spacedKmerPattern);
++        Sequence seqExternalAux(qdbr->getMaxSeqLen(), Parameters::DBTYPE_AMINO_ACIDS,
++                                externalAuxSubMat != NULL ? externalAuxSubMat : ungappedSubMat,
++                                0, false, false);
+         QueryMatcher matcher(indexTable, sequenceLookup, kmerSubMat,  ungappedSubMat,
+                              kmerThr, kmerSize, dbSize, std::max(tdbr->getMaxSeqLen(),qdbr->getMaxSeqLen()), maxResListLen, aaBiasCorrection, aaBiasCorrectionScale,
+                              diagonalScoring, minDiagScoreThr, takeOnlyBestKmer, targetSeqType==Parameters::DBTYPE_NUCLEOTIDES,
+-                             ungappedSubMatAux, targetSeqType);
++                             ungappedSubMatAux, targetSeqType,
++                             sequenceLookupExternalAux, externalAuxSubMat);
+ 
+         if (seq.profile_matrix != NULL) {
+             matcher.setProfileMatrix(seq.profile_matrix);
+@@ -836,6 +935,15 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
+             char *seqData = qdbr->getData(id, thread_idx);
+             unsigned int qKey = qdbr->getDbKey(id);
+             seq.mapSequence(id, qKey, seqData, qdbr->getSeqLen(id));
++            if (externalAuxScoring) {
++                if (qdbrExternalAux->getDbKey(id) != qKey ||
++                    qdbrExternalAux->getSeqLen(id) != qdbr->getSeqLen(id)) {
++                    Debug(Debug::ERROR) << "TEA/AA query database key or length mismatch at sequence " << qKey << "\n";
++                    EXIT(EXIT_FAILURE);
++                }
++                seqExternalAux.mapSequence(id, qKey, qdbrExternalAux->getData(id, thread_idx),
++                                           qdbrExternalAux->getSeqLen(id));
++            }
+             size_t targetSeqId = UINT_MAX;
+             if (sameQTDB || includeIdentical) {
+                 targetSeqId = tdbr->getId(seq.getDbKey());
+@@ -854,7 +962,9 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
+             if (taxonomyHook != NULL) {
+                 taxonomyHook->setDbFrom(dbFrom);
+             }
+-            std::pair<hit_t *, size_t> prefResults = matcher.matchQuery(&seq, targetSeqId, targetSeqType == Parameters::DBTYPE_NUCLEOTIDES);
++            std::pair<hit_t *, size_t> prefResults = matcher.matchQuery(
++                &seq, targetSeqId, targetSeqType == Parameters::DBTYPE_NUCLEOTIDES,
++                externalAuxScoring ? &seqExternalAux : NULL);
+             size_t resultSize = prefResults.second;
+             const float queryLength = static_cast<float>(qdbr->getSeqLen(id));
+             for (size_t i = 0; i < resultSize; i++) {
+@@ -942,6 +1052,10 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
+             delete sequenceLookup;
+             sequenceLookup = NULL;
+         }
++        if (sequenceLookupExternalAux != NULL) {
++            delete sequenceLookupExternalAux;
++            sequenceLookupExternalAux = NULL;
++        }
+         DBReader<unsigned int> resultReader(tmpDbw.getDataFileName(), tmpDbw.getIndexFileName(), threads, DBReader<unsigned int>::USE_INDEX|DBReader<unsigned int>::USE_DATA);
+         resultReader.open(DBReader<unsigned int>::NOSORT);
+         resultReader.readMmapedDataInMemory();
+diff --git a/src/prefiltering/Prefiltering.h b/src/prefiltering/Prefiltering.h
+index fa5830c0..f546a2d6 100644
+--- a/src/prefiltering/Prefiltering.h
++++ b/src/prefiltering/Prefiltering.h
+@@ -70,6 +70,8 @@ private:
+     DBReader<unsigned int> *qdbr;
+     DBReader<unsigned int> *tdbr;
+     DBReader<unsigned int> *tidxdbr;
++    DBReader<unsigned int> *qdbrExternalAux;
++    DBReader<unsigned int> *tdbrExternalAux;
+     bool sameQTDB;
+ 
+     BaseMatrix *kmerSubMat;
+@@ -79,6 +81,9 @@ private:
+     ScoreMatrix _3merSubMatrix;
+     IndexTable *indexTable;
+     SequenceLookup *sequenceLookup;
++    SequenceLookup *sequenceLookupExternalAux;
++    BaseMatrix *externalAuxSubMat;
++    bool externalAuxScoring;
+ 
+     // parameter
+     int splits;
+@@ -135,6 +140,7 @@ private:
+ 
+     // needed for index lookup
+     void getIndexTable(int split, size_t dbFrom, size_t dbSize);
++    void buildExternalAuxLookup(size_t dbFrom, size_t dbSize);
+ 
+     void printStatistics(const statistics_t &stats, std::list<int> **reslens,
+                          unsigned int resLensSize, size_t empty, size_t maxResults);
+diff --git a/src/prefiltering/QueryMatcher.cpp b/src/prefiltering/QueryMatcher.cpp
+index 028ef86f..619ee3ee 100644
+--- a/src/prefiltering/QueryMatcher.cpp
++++ b/src/prefiltering/QueryMatcher.cpp
+@@ -1,4 +1,5 @@
+ #include "SubstitutionMatrix.h"
++#include <cstdlib>
+ #include "QueryMatcher.h"
+ #include "FastSort.h"
+ #include "Util.h"
+@@ -30,7 +31,9 @@ QueryMatcher::QueryMatcher(IndexTable *indexTable, SequenceLookup *sequenceLooku
+                            unsigned int maxSeqLen, size_t maxHitsPerQuery, bool aaBiasCorrection, float aaBiasCorrectionScale,
+                            bool diagonalScoring, unsigned int minDiagScoreThr, bool takeOnlyBestKmer, bool isNucleotide,
+                            BaseMatrix *ungappedAlignmentSubMatAux,
+-                           int targetSeqType)
++                           int targetSeqType,
++                           SequenceLookup *externalAuxSequenceLookup,
++                           BaseMatrix *externalAuxSubMat)
+         : idx(indexTable->getAlphabetSize(), kmerSize), isNucleotide(isNucleotide), hook(NULL)
+ {
+     this->kmerSubMat = kmerSubMat;
+@@ -69,6 +72,11 @@ QueryMatcher::QueryMatcher(IndexTable *indexTable, SequenceLookup *sequenceLooku
+     // needed for p-value calc.
+     ungappedAlignment = NULL;
+     ungappedAlignmentAux = NULL;
++    this->primarySequenceLookup = sequenceLookup;
++    this->externalAuxSequenceLookup = externalAuxSequenceLookup;
++    this->externalAuxSubMat = externalAuxSubMat;
++    this->currentQuerySeq = NULL;
++    this->externalAuxQuerySeq = NULL;
+     if (diagonalScoring) {
+         // Look up remap tables from the Sequence registry (registered by downstream projects e.g. Foldseek)
+         const Sequence::SeqAuxInfo *auxInfo = Sequence::getAuxInfo(targetSeqType);
+@@ -105,7 +113,10 @@ QueryMatcher::~QueryMatcher(){
+     delete kmerGenerator;
+ }
+ 
+-std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned int identityId, bool isNucleotide) {
++std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned int identityId, bool isNucleotide,
++                                                   Sequence *externalAuxQuerySeq) {
++    this->currentQuerySeq = querySeq;
++    this->externalAuxQuerySeq = externalAuxQuerySeq;
+     querySeq->resetCurrPos();
+ //    std::cout << "Id: " << querySeq->getId() << std::endl;
+     memset(scoreSizes, 0, SCORE_RANGE * sizeof(unsigned int));
+@@ -132,9 +143,18 @@ std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned
+     }
+     std::pair<hit_t *, size_t> queryResult;
+     if (diagonalScoring) {
+-        // write diagonal scores in count value
+-        ungappedAlignment->align(foundDiagonals, resultSize);
+-        if (ungappedAlignmentAux != NULL && querySeq->numSequenceAux != NULL) {
++        // Write diagonal scores in count value. STEAM's optional companion-AA
++        // mode computes the local maximum of TEA+AA at each aligned position,
++        // before MMseqs applies its normal best-diagonal and --max-seqs gates.
++        if (externalAuxSequenceLookup != NULL && externalAuxSubMat != NULL && externalAuxQuerySeq != NULL) {
++            for (size_t i = 0; i < resultSize; i++) {
++                foundDiagonals[i].count = static_cast<unsigned char>(
++                    std::min(255u, scoreExternalCombined(foundDiagonals[i])));
++            }
++        } else {
++            ungappedAlignment->align(foundDiagonals, resultSize);
++        }
++        if (externalAuxSequenceLookup == NULL && ungappedAlignmentAux != NULL && querySeq->numSequenceAux != NULL) {
+             for (size_t i = 0; i < resultSize; i++) {
+                 scoreBackup[i] = foundDiagonals[i].count;
+                 foundDiagonals[i].count = 0;
+@@ -466,6 +486,9 @@ void QueryMatcher::updateScoreBins(CounterResult *result, size_t elementCount) {
+ }
+ 
+ unsigned int QueryMatcher::scoreSingleSequenceCombined(CounterResult &result) {
++    if (externalAuxSequenceLookup != NULL && externalAuxSubMat != NULL && externalAuxQuerySeq != NULL) {
++        return scoreExternalCombined(result);
++    }
+     unsigned int score = ungappedAlignment->scoreSingelSequenceByCounterResult(result);
+     if (ungappedAlignmentAux != NULL) {
+         score += ungappedAlignmentAux->scoreSingelSequenceByCounterResult(result);
+@@ -473,6 +496,43 @@ unsigned int QueryMatcher::scoreSingleSequenceCombined(CounterResult &result) {
+     return score;
+ }
+ 
++unsigned int QueryMatcher::scoreExternalCombined(const unsigned char *queryPrimary, unsigned int queryPrimaryLen,
++                                                  const unsigned char *queryAux, unsigned int queryAuxLen,
++                                                  const unsigned char *targetPrimary, unsigned int targetPrimaryLen,
++                                                  const unsigned char *targetAux, unsigned int targetAuxLen,
++                                                  short diagonal) const {
++    const unsigned int distance = static_cast<unsigned int>(std::abs(static_cast<int>(diagonal)));
++    const unsigned int queryOffset = (diagonal >= 0) ? distance : 0;
++    const unsigned int targetOffset = (diagonal >= 0) ? 0 : distance;
++    if (queryOffset >= queryPrimaryLen || queryOffset >= queryAuxLen ||
++        targetOffset >= targetPrimaryLen || targetOffset >= targetAuxLen) {
++        return 0;
++    }
++
++    const unsigned int length = std::min(
++        std::min(queryPrimaryLen - queryOffset, queryAuxLen - queryOffset),
++        std::min(targetPrimaryLen - targetOffset, targetAuxLen - targetOffset));
++    int score = 0;
++    int maxScore = 0;
++    for (unsigned int pos = 0; pos < length; pos++) {
++        score += ungappedAlignmentSubMat->subMatrix[queryPrimary[queryOffset + pos]][targetPrimary[targetOffset + pos]];
++        score += externalAuxSubMat->subMatrix[queryAux[queryOffset + pos]][targetAux[targetOffset + pos]];
++        score = std::max(score, 0);
++        maxScore = std::max(maxScore, score);
++    }
++    return static_cast<unsigned int>(maxScore);
++}
++
++unsigned int QueryMatcher::scoreExternalCombined(CounterResult &result) const {
++    std::pair<const unsigned char *, const unsigned int> targetPrimary = primarySequenceLookup->getSequence(result.id);
++    std::pair<const unsigned char *, const unsigned int> targetAux = externalAuxSequenceLookup->getSequence(result.id);
++    return scoreExternalCombined(currentQuerySeq->numSequence, currentQuerySeq->L,
++                                 externalAuxQuerySeq->numSequence, externalAuxQuerySeq->L,
++                                 targetPrimary.first, targetPrimary.second,
++                                 targetAux.first, targetAux.second,
++                                 static_cast<short>(result.diagonal));
++}
++
+ template <int TYPE>
+ std::pair<hit_t*, size_t> QueryMatcher::getResult(CounterResult * results,
+                                                   size_t resultSize,
+@@ -639,8 +699,17 @@ std::pair<size_t, unsigned int> QueryMatcher::rescoreHits(Sequence * querySeq, u
+                                                           size_t resultSize, UngappedAlignment *align, int lowerBoundScore) {
+     size_t elements = 0;
+     const unsigned char * query = querySeq->numSequence;
+-    int maxSelfScore = align->scoreSingleSequence(std::make_pair(query, querySeq->L), 0,0);
+-    if (ungappedAlignmentAux != NULL && querySeq->numSequenceAux != NULL) {
++    int maxSelfScore;
++    if (externalAuxSequenceLookup != NULL && externalAuxSubMat != NULL && externalAuxQuerySeq != NULL) {
++        maxSelfScore = static_cast<int>(scoreExternalCombined(
++            query, querySeq->L,
++            externalAuxQuerySeq->numSequence, externalAuxQuerySeq->L,
++            query, querySeq->L,
++            externalAuxQuerySeq->numSequence, externalAuxQuerySeq->L, 0));
++    } else {
++        maxSelfScore = align->scoreSingleSequence(std::make_pair(query, querySeq->L), 0,0);
++    }
++    if (externalAuxSequenceLookup == NULL && ungappedAlignmentAux != NULL && querySeq->numSequenceAux != NULL) {
+         const unsigned char *queryAux = querySeq->numSequenceAux;
+         maxSelfScore += ungappedAlignmentAux->scoreSingleSequence(std::make_pair(queryAux, querySeq->L), 0, 0);
+     }
+diff --git a/src/prefiltering/QueryMatcher.h b/src/prefiltering/QueryMatcher.h
+index ed8d0ad5..5f63bbfb 100644
+--- a/src/prefiltering/QueryMatcher.h
++++ b/src/prefiltering/QueryMatcher.h
+@@ -58,12 +58,15 @@ public:
+                  size_t maxHitsPerQuery, bool aaBiasCorrection, float aaBiasCorrectionScale, bool diagonalScoringMode,
+                  unsigned int minDiagScoreThr, bool takeOnlyBestKmer, bool isNucleotide,
+                  BaseMatrix *ungappedAlignmentSubMatAux = NULL,
+-                 int targetSeqType = 0);
++                 int targetSeqType = 0,
++                 SequenceLookup *externalAuxSequenceLookup = NULL,
++                 BaseMatrix *externalAuxSubMat = NULL);
+     ~QueryMatcher();
+ 
+     // returns result for the sequence
+     // identityId is the id of the identitical sequence in the target database if there is any, UINT_MAX otherwise
+-    std::pair<hit_t*, size_t> matchQuery(Sequence *querySeq, unsigned int identityId, bool isNucleotide);
++    std::pair<hit_t*, size_t> matchQuery(Sequence *querySeq, unsigned int identityId, bool isNucleotide,
++                                        Sequence *externalAuxQuerySeq = NULL);
+ 
+     void setQueryMatcherHook(QueryMatcherHook* hook) {
+         this->hook = hook;
+@@ -165,6 +168,11 @@ protected:
+     // matcher for diagonal
+     UngappedAlignment *ungappedAlignment;
+     UngappedAlignment *ungappedAlignmentAux;
++    SequenceLookup *primarySequenceLookup;
++    SequenceLookup *externalAuxSequenceLookup;
++    BaseMatrix *externalAuxSubMat;
++    Sequence *currentQuerySeq;
++    Sequence *externalAuxQuerySeq;
+ 
+     // score distribution of current query
+     unsigned int *scoreSizes;
+@@ -207,6 +215,12 @@ protected:
+ 
+     void updateScoreBins(CounterResult *result, size_t elementCount);
+     unsigned int scoreSingleSequenceCombined(CounterResult &result);
++    unsigned int scoreExternalCombined(const unsigned char *queryPrimary, unsigned int queryPrimaryLen,
++                                       const unsigned char *queryAux, unsigned int queryAuxLen,
++                                       const unsigned char *targetPrimary, unsigned int targetPrimaryLen,
++                                       const unsigned char *targetAux, unsigned int targetAuxLen,
++                                       short diagonal) const;
++    unsigned int scoreExternalCombined(CounterResult &result) const;
+ 
+     static unsigned int computeScoreThreshold(unsigned int * scoreSizes, size_t maxHitsPerQuery) {
+         size_t foundHits = 0;

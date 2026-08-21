@@ -54,6 +54,7 @@ Useful flags:
 |-----------|---------|-------------|
 | `-e` | 100 | E-value threshold |
 | `--max-seqs` | 2000 | Maximum results per query from prefiltering |
+| `--ungapped-tea-aa` | 0 | Rank double-hit candidates by combined TEA+AA ungapped score before `--max-seqs` |
 | `--min-seq-id` | 0 | Minimum **amino acid** sequence identity |
 
 ### 3. Cluster
@@ -141,6 +142,11 @@ The alignment score at each position is the sum of:
 
 - **MATCHA score**: substitution score from the TEA alphabet matrix
 - **AA score**: BLOSUM62 substitution score, weighted by `--aa-weight` (default 1.4)
+
+By default, prefilter candidates are ranked using TEA-only ungapped diagonal
+scores. Pass `--ungapped-tea-aa 1` to use the same combined MATCHA + weighted
+AA score for ungapped ranking before the `--max-seqs` cutoff. K-mer matching
+still uses TEA sequences.
 
 ## E-value computation
 

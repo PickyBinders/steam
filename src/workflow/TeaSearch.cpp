@@ -20,6 +20,10 @@ int teasearch(int argc, const char **argv, const Command &command) {
         Debug(Debug::ERROR) << "--matcha is required for steam search\n";
         EXIT(EXIT_FAILURE);
     }
+    if (par.ungappedTeaAa && par.exhaustiveSearch) {
+        Debug(Debug::ERROR) << "--ungapped-tea-aa is not supported together with --exhaustive-search\n";
+        EXIT(EXIT_FAILURE);
+    }
 
     std::string tmpDir = par.filenames.back();
     par.filenames.pop_back();
@@ -40,6 +44,11 @@ int teasearch(int argc, const char **argv, const Command &command) {
     auto origScoringMatrixFile = par.scoringMatrixFile;
     par.scoringMatrixFile = MultiParam<NuclAA<std::string>>(NuclAA<std::string>(par.teaMatrixFile, par.teaMatrixFile));
     cmd.addVariable("PREFILTER_PAR", par.createParameterString(par.teaprefilter).c_str());
+    cmd.addVariable("STEAM_UNGAPPED_AA", par.ungappedTeaAa ? "1" : NULL);
+    cmd.addVariable("STEAM_UNGAPPED_AA_SUBMAT",
+                    par.ungappedTeaAa ? origScoringMatrixFile.values.aminoacid().c_str() : NULL);
+    const std::string aaWeight = SSTR(par.teaWeight);
+    cmd.addVariable("STEAM_UNGAPPED_AA_WEIGHT", par.ungappedTeaAa ? aaWeight.c_str() : NULL);
 
     // Exhaustive search: mirror mmseqs2's Search.cpp logic.
     // teasearch.sh's fake_pref creates a synthetic prefilter that pairs every

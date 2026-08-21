@@ -26,12 +26,14 @@ public:
     float loglinearM;
     float loglinearC;
     float pFP;
+    bool ungappedTeaAa;
 
     PARAMETER(PARAM_TEA_WEIGHT)
     PARAMETER(PARAM_TEA_MAT)
     PARAMETER(PARAM_LOGLINEAR_M)
     PARAMETER(PARAM_LOGLINEAR_C)
     PARAMETER(PARAM_P_FP)
+    PARAMETER(PARAM_UNGAPPED_TEA_AA)
 
     // Parameter vectors for TEA commands
     std::vector<MMseqsParameter*> createteadb;

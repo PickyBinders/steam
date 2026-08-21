@@ -27,7 +27,12 @@ LocalParameters::LocalParameters() :
                    "Prior probability that a reported hit is a false positive",
                    typeid(float), (void *) &pFP,
                    "^[0-9]*(\\.[0-9]+)?$",
-                   MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT)
+                   MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
+        PARAM_UNGAPPED_TEA_AA(PARAM_UNGAPPED_TEA_AA_ID, "--ungapped-tea-aa", "Combined ungapped scoring",
+                              "Rank prefilter hits by combined TEA+AA ungapped score before applying --max-seqs",
+                              typeid(bool), (void *) &ungappedTeaAa,
+                              "^[0-1]{1}$",
+                              MMseqsParameter::COMMAND_PREFILTER | MMseqsParameter::COMMAND_EXPERT)
 {
     // Defaults
     teaWeight = 1.4;
@@ -35,6 +40,7 @@ LocalParameters::LocalParameters() :
     loglinearM = -0.0182549591;
     loglinearC = 0.03214628;
     pFP = 1.0;
+    ungappedTeaAa = false;
     // Register matcha.out as a bundled substitution matrix
     substitutionMatrices.push_back({"matcha.out", matcha_out, matcha_out_len});
     compBiasCorrection = 0;
@@ -69,7 +75,7 @@ LocalParameters::LocalParameters() :
     // teasearch = prefilter + teaalign + tearescorediagonal + common
     teasearchworkflow = combineList(prefilter, teaalign);
     teasearchworkflow = combineList(teasearchworkflow, tearescorediagonal);
-    teasearchworkflow = combineList(teasearchworkflow, {&PARAM_RUNNER, &PARAM_REUSELATEST, &PARAM_EXHAUSTIVE_SEARCH});
+    teasearchworkflow = combineList(teasearchworkflow, {&PARAM_UNGAPPED_TEA_AA, &PARAM_RUNNER, &PARAM_REUSELATEST, &PARAM_EXHAUSTIVE_SEARCH});
 
     // easyteasearch = teasearch + createteadb + convertalis
     easyteasearchworkflow = combineList(teasearchworkflow, createteadb);
