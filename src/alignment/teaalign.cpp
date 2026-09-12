@@ -57,7 +57,8 @@ static int doTeaAlign(TeaSmithWaterman &teaSW,
             tSeqAA.numSequence, tSeqTea.numSequence, targetSeqLen,
             par.gapOpen.values.aminoacid(), par.gapExtend.values.aminoacid(),
             backtrace, align);
-        if (align.score1 == UINT32_MAX) {
+        // The block aligner returns its failure sentinel in a copy; preserve align for the fallback.
+        if (alignTmp.score1 == UINT32_MAX) {
             blockAlignFailed = true;
         } else {
             align = alignTmp;
@@ -154,7 +155,7 @@ int teaalign(int argc, const char **argv, const Command &command) {
         }
     }
     const char *teaMatSource = teaMatData.empty() ? par.teaMatrixFile.c_str() : teaMatData.c_str();
-    SubstitutionMatrix subMatTea(teaMatSource, 1.0, par.scoreBias);
+    SubstitutionMatrix subMatTea(teaMatSource, par.teaScale, par.scoreBias);
 
     // AA substitution matrix (from --sub-mat, weighted by --aa-weight)
     float aaFactor = par.teaWeight;

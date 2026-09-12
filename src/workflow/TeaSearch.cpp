@@ -1,7 +1,6 @@
 #include "LocalParameters.h"
 #include "FileUtil.h"
 #include "CommandCaller.h"
-#include "Util.h"
 #include "Debug.h"
 
 #include "teasearch.sh.h"
@@ -20,10 +19,8 @@ int teasearch(int argc, const char **argv, const Command &command) {
         Debug(Debug::ERROR) << "--matcha is required for steam search\n";
         EXIT(EXIT_FAILURE);
     }
-    if (par.ungappedTeaAa && par.exhaustiveSearch) {
-        Debug(Debug::ERROR) << "--ungapped-tea-aa is not supported together with --exhaustive-search\n";
-        EXIT(EXIT_FAILURE);
-    }
+    // Exhaustive alignment bypasses the prefilter, so its scoring mode is irrelevant.
+    const bool combinedUngapped = par.ungappedTeaAa && !par.exhaustiveSearch;
 
     std::string tmpDir = par.filenames.back();
     par.filenames.pop_back();
@@ -44,25 +41,14 @@ int teasearch(int argc, const char **argv, const Command &command) {
     auto origScoringMatrixFile = par.scoringMatrixFile;
     par.scoringMatrixFile = MultiParam<NuclAA<std::string>>(NuclAA<std::string>(par.teaMatrixFile, par.teaMatrixFile));
     cmd.addVariable("PREFILTER_PAR", par.createParameterString(par.teaprefilter).c_str());
-    cmd.addVariable("STEAM_UNGAPPED_AA", par.ungappedTeaAa ? "1" : NULL);
+    cmd.addVariable("STEAM_UNGAPPED_AA", combinedUngapped ? "1" : NULL);
     cmd.addVariable("STEAM_UNGAPPED_AA_SUBMAT",
-                    par.ungappedTeaAa ? origScoringMatrixFile.values.aminoacid().c_str() : NULL);
+                    combinedUngapped ? origScoringMatrixFile.values.aminoacid().c_str() : NULL);
     const std::string aaWeight = SSTR(par.teaWeight);
-    cmd.addVariable("STEAM_UNGAPPED_AA_WEIGHT", par.ungappedTeaAa ? aaWeight.c_str() : NULL);
+    cmd.addVariable("STEAM_UNGAPPED_AA_WEIGHT", combinedUngapped ? aaWeight.c_str() : NULL);
 
-    // Exhaustive search: mirror mmseqs2's Search.cpp logic.
-    // teasearch.sh's fake_pref creates a synthetic prefilter that pairs every
-    // query with every target, so the k-mer prefilter is bypassed entirely.
-    // We still adjust covMode / maxResListLen / evalThr the same way mmseqs
-    // does so alignment-stage filtering behaves correctly on the all-pairs
-    // input.
-    if (par.exhaustiveSearch) {
-        const size_t queryDbSize  = FileUtil::countLines(par.db1Index.c_str());
-        const size_t targetDbSize = FileUtil::countLines(par.db2Index.c_str());
-        par.covMode = Util::swapCoverageMode(par.covMode);
-        par.maxResListLen = std::max((size_t)300, queryDbSize);
-        par.evalThr *= ((float) queryDbSize) / targetDbSize;
-    }
+    // Unlike MMseqs' transposed exhaustive workflow, fake_pref retains query
+    // and target orientation. Keep coverage modes and the user's E cutoff.
 
     // Restore original --sub-mat so rescorediagonal and alignment use the AA matrix (e.g. BLOSUM62),
     // not the TEA matrix, for the amino acid scoring component

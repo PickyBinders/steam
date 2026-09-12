@@ -54,7 +54,7 @@ Useful flags:
 |-----------|---------|-------------|
 | `-e` | 100 | E-value threshold |
 | `--max-seqs` | 2000 | Maximum results per query from prefiltering |
-| `--ungapped-tea-aa` | 0 | Rank double-hit candidates by combined TEA+AA ungapped score before `--max-seqs` |
+| `--ungapped-tea-aa` | 1 | Rank double-hit candidates by combined TEA+AA ungapped score before `--max-seqs` |
 | `--min-seq-id` | 0 | Minimum **amino acid** sequence identity |
 
 ### 3. Cluster
@@ -140,13 +140,26 @@ Standard MMseqs2 output columns (`fident`, `alnlen`, `qcov`, `tcov`, `evalue`, `
 
 The alignment score at each position is the sum of:
 
-- **MATCHA score**: substitution score from the TEA alphabet matrix
+- **MATCHA score**: substitution score from the TEA alphabet matrix, scaled by `--tea-scale` (default 1; use 2 for half-bit matrices)
 - **AA score**: BLOSUM62 substitution score, weighted by `--aa-weight` (default 1.4)
 
-By default, prefilter candidates are ranked using TEA-only ungapped diagonal
-scores. Pass `--ungapped-tea-aa 1` to use the same combined MATCHA + weighted
-AA score for ungapped ranking before the `--max-seqs` cutoff. K-mer matching
-still uses TEA sequences.
+By default, prefilter candidates are ranked using the combined MATCHA +
+weighted AA ungapped diagonal score before the `--max-seqs` cutoff. Pass
+`--ungapped-tea-aa 0` for TEA-only ungapped ranking. K-mer matching still uses
+TEA sequences.
+
+For an exported TEA matrix, verify the native loaded integers before searching:
+
+```bash
+cmake --build build --target steam_dump_matrix
+build/src/steam_dump_matrix tea.out 2
+```
+
+The diagnostic uses the same MMseqs matrix loader as alignment and emits all
+state-pair scores. Compare the 20-state entries against the exported integer
+matrix. The required X row does not authorize unknown TEA states in inputs.
+`--tea-scale` applies to gapped and explicit diagonal rescoring; native prefilter
+score scaling remains a separate heuristic.
 
 ## E-value computation
 

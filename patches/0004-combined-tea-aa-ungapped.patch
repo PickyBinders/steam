@@ -35,8 +35,8 @@ index 92d957f3..53886863 100644
          case Parameters::DBTYPE_AMINO_ACIDS:
              kmerSubMat = getSubstitutionMatrix(seedScoringMatrixFile, par.alphabetSize, 8.0, false, false);
 -            ungappedSubMat = getSubstitutionMatrix(scoringMatrixFile, par.alphabetSize, 2.0, false, false);
-+            ungappedSubMat = getSubstitutionMatrix(scoringMatrixFile, par.alphabetSize,
-+                                                   externalAuxScoring ? 1.0 : 2.0, false, false);
++            // Adding companion AA scoring must preserve the TEA ungapped score scale.
++            ungappedSubMat = getSubstitutionMatrix(scoringMatrixFile, par.alphabetSize, 2.0, false, false);
              alphabetSize = kmerSubMat->alphabetSize;
              break;
          case Parameters::DBTYPE_HMM_PROFILE:

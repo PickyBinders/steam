@@ -63,3 +63,20 @@ the top-X% concept to be meaningful.
 
 If `STEAM_CLUSTER_DEFAULTS=1` (default), `setLinclustWorkflowDefaults` in `Linclust.cpp` switches to
 foldseek-style defaults (`-e 0.01` and `kmersPerSequence 300`).
+
+### `0005-preserve-spaced-pattern-index.patch`
+
+**Target:** `PrefilteringIndexReader::createIndexFile`.
+
+The upstream condition wrote the spaced-k-mer pattern only when it was empty.
+A cached index built with a custom pattern therefore lost that pattern on
+reload. Preserve nonempty patterns instead. Existing custom-pattern indexes
+created before this fix must be rebuilt; their metadata cannot establish the
+pattern used to build them.
+
+Use the same seed matrix as the ordinary prefilter (currently VTML80 for the
+frozen TEA recipe). TEA's released substitution matrix remains the separate
+ungapped scoring matrix. A separate candidate build and exact SCOP raw/indexed
+prefilter plus E-value-filtered alignment comparisons are required before
+promoting this optimization. The fixed benchmark binary is retained during
+validation.

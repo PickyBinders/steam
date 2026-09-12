@@ -12,7 +12,7 @@ mkdir -p "${test_dir}/flag_off" "${test_dir}/flag_on"
     "${fixture_dir}/query_tea.fasta" "${fixture_dir}/query_aa.fasta" \
     "${fixture_dir}/target_tea.fasta" "${fixture_dir}/target_aa.fasta" \
     "${test_dir}/flag_off.m8" "${test_dir}/flag_off" \
-    --max-seqs 1 --threads 1 -v 1
+    --ungapped-tea-aa 0 --max-seqs 1 --threads 1 -v 1
 
 "${steam_bin}" easy-search \
     "${fixture_dir}/query_tea.fasta" "${fixture_dir}/query_aa.fasta" \

@@ -1,5 +1,6 @@
 #include "FileUtil.h"
 #include "DBWriter.h"
+#include "DBReader.h"
 #include "Debug.h"
 #include "Util.h"
 #include "KSeqWrapper.h"
@@ -125,6 +126,11 @@ int createteadb(int argc, const char **argv, const Command &command) {
     hdrWriter.close(true);
     aaWriter.close(true);
     teaWriter.close(true);
+
+    // Both alphabets share IDs; expose the same headers/lookup so native
+    // sequence utilities can also read the companion AA database directly.
+    DBReader<unsigned int>::softlinkDb(outDB, aaSeqDataFile,
+            (DBFiles::Files) (DBFiles::HEADERS | DBFiles::LOOKUP));
 
     delete teaReader;
     delete aaReader;

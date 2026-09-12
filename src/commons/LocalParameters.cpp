@@ -13,6 +13,11 @@ LocalParameters::LocalParameters() :
                       typeid(std::string), (void *) &teaMatrixFile,
                       "",
                       MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_PREFILTER | MMseqsParameter::COMMAND_EXPERT),
+        PARAM_TEA_SCALE(PARAM_TEA_SCALE_ID, "--tea-scale", "TEA score scale",
+                        "Alphabet score units per bit (2 for half-bit TEA matrices)",
+                        typeid(float), (void *) &teaScale,
+                        "^[0-9]*(\\.[0-9]+)?$",
+                        MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
         PARAM_LOGLINEAR_M(PARAM_LOGLINEAR_M_ID, "--loglinear-m", "Log-linear slope",
                           "Slope parameter m for log-linear E-value model: E = P(FP) * (H/Q) * 10^(m*s+c)",
                           typeid(float), (void *) &loglinearM,
@@ -29,18 +34,19 @@ LocalParameters::LocalParameters() :
                    "^[0-9]*(\\.[0-9]+)?$",
                    MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
         PARAM_UNGAPPED_TEA_AA(PARAM_UNGAPPED_TEA_AA_ID, "--ungapped-tea-aa", "Combined ungapped scoring",
-                              "Rank prefilter hits by combined TEA+AA ungapped score before applying --max-seqs",
+                              "Rank prefilter hits by combined TEA+AA ungapped score before applying --max-seqs; unused in exhaustive search",
                               typeid(bool), (void *) &ungappedTeaAa,
                               "^[0-1]{1}$",
                               MMseqsParameter::COMMAND_PREFILTER | MMseqsParameter::COMMAND_EXPERT)
 {
     // Defaults
     teaWeight = 1.4;
+    teaScale = 1.0;
     teaMatrixFile = "matcha.out";
     loglinearM = -0.0182549591;
     loglinearC = 0.03214628;
     pFP = 1.0;
-    ungappedTeaAa = false;
+    ungappedTeaAa = true;
     // Register matcha.out as a bundled substitution matrix
     substitutionMatrices.push_back({"matcha.out", matcha_out, matcha_out_len});
     compBiasCorrection = 0;
@@ -62,12 +68,12 @@ LocalParameters::LocalParameters() :
     createteadb.push_back(&PARAM_V);
 
     // teaalign = align + TEA-specific params + E-value params
-    teaalign = combineList(align, {&PARAM_TEA_WEIGHT, &PARAM_TEA_MAT,
+    teaalign = combineList(align, {&PARAM_TEA_WEIGHT, &PARAM_TEA_MAT, &PARAM_TEA_SCALE,
                                     &PARAM_LOGLINEAR_M, &PARAM_LOGLINEAR_C, &PARAM_P_FP});
 
     // tearescorediagonal = mmseqs rescorediagonal + align + TEA-specific params.
     tearescorediagonal = combineList(rescorediagonal, align);
-    tearescorediagonal = combineList(tearescorediagonal, {&PARAM_TEA_WEIGHT, &PARAM_TEA_MAT});
+    tearescorediagonal = combineList(tearescorediagonal, {&PARAM_TEA_WEIGHT, &PARAM_TEA_MAT, &PARAM_TEA_SCALE});
 
     // teaprefilter = base prefilter list (for the steam-specific prefilter alias)
     teaprefilter = prefilter;

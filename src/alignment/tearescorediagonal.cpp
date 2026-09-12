@@ -232,7 +232,7 @@ int tearescorediagonal(int argc, const char **argv, const Command &command) {
         }
     }
     const char *teaMatSource = teaMatData.empty() ? par.teaMatrixFile.c_str() : teaMatData.c_str();
-    SubstitutionMatrix subMatTea(teaMatSource, 1.0, par.scoreBias);
+    SubstitutionMatrix subMatTea(teaMatSource, par.teaScale, par.scoreBias);
 
     // AA substitution matrix (from --sub-mat, weighted by --aa-weight)
     float aaFactor = par.teaWeight;

@@ -22,6 +22,7 @@ public:
 
     // TEA-specific parameters
     float teaWeight;
+    float teaScale;
     std::string teaMatrixFile;
     float loglinearM;
     float loglinearC;
@@ -30,6 +31,7 @@ public:
 
     PARAMETER(PARAM_TEA_WEIGHT)
     PARAMETER(PARAM_TEA_MAT)
+    PARAMETER(PARAM_TEA_SCALE)
     PARAMETER(PARAM_LOGLINEAR_M)
     PARAMETER(PARAM_LOGLINEAR_C)
     PARAMETER(PARAM_P_FP)
