@@ -28,13 +28,50 @@ endif()
 
 # Apply STEAM patches to the bundled mmseqs2 submodule before configuring it.
 # Each patch lives in patches/*.patch and is applied at the lib/mmseqs root.
-# Idempotent: if a patch is already applied (reverse-check succeeds) we skip
-# it. If a patch cannot be applied and is also not already applied, the
+# Idempotent: reverse the complete ordered series in a temporary source copy.
+# Later patches may change earlier hunks, so independent reverse checks alone
+# are insufficient. If the series is not applied and a patch cannot apply, the
 # build aborts loudly — this happens when the mmseqs submodule pointer was
 # bumped and the patch needs to be rebased against the new upstream code.
+option(
+    STEAM_SKIP_BUNDLED_PATCH_APPLICATION
+    "Skip patch checks only when configuring an already-patched MMseqs worktree"
+    OFF
+)
 file(GLOB STEAM_PATCHES "${CMAKE_CURRENT_SOURCE_DIR}/patches/*.patch")
 list(SORT STEAM_PATCHES)
 find_package(Git QUIET REQUIRED)
+if(NOT STEAM_SKIP_BUNDLED_PATCH_APPLICATION)
+    set(_patch_check_dir "${CMAKE_BINARY_DIR}/steam-patch-check")
+    foreach(PATCH ${STEAM_PATCHES})
+        file(READ "${PATCH}" _patch_text)
+        string(REGEX MATCHALL "diff --git a/[^ \n]+" _patch_paths "${_patch_text}")
+        foreach(_path ${_patch_paths})
+            string(REPLACE "diff --git a/" "" _path "${_path}")
+            get_filename_component(_parent "${_path}" DIRECTORY)
+            file(MAKE_DIRECTORY "${_patch_check_dir}/${_parent}")
+            configure_file("${CMAKE_CURRENT_SOURCE_DIR}/lib/mmseqs/${_path}"
+                           "${_patch_check_dir}/${_path}" COPYONLY)
+        endforeach()
+    endforeach()
+    set(_reverse_patches ${STEAM_PATCHES})
+    list(REVERSE _reverse_patches)
+    set(_series_applied TRUE)
+    foreach(PATCH ${_reverse_patches})
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} -E env "GIT_CEILING_DIRECTORIES=${CMAKE_BINARY_DIR}"
+                    ${GIT_EXECUTABLE} apply --reverse "${PATCH}"
+            WORKING_DIRECTORY "${_patch_check_dir}"
+            RESULT_VARIABLE _reverse_result OUTPUT_QUIET ERROR_QUIET
+        )
+        if(NOT _reverse_result EQUAL 0)
+            set(_series_applied FALSE)
+            break()
+        endif()
+    endforeach()
+    if(_series_applied)
+        message(STATUS "STEAM patch series already applied")
+    else()
 foreach(PATCH ${STEAM_PATCHES})
     get_filename_component(PATCH_NAME ${PATCH} NAME)
     execute_process(
@@ -60,6 +97,8 @@ foreach(PATCH ${STEAM_PATCHES})
         message(STATUS "Applied STEAM patch: ${PATCH_NAME}")
     endif()
 endforeach()
+    endif()
+endif()
 
 # Build MMseqs2 as a framework library only (no executable)
 set(FRAMEWORK_ONLY 1 CACHE INTERNAL "" FORCE)

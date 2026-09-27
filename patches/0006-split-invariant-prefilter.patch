@@ -1,0 +1,415 @@
+diff --git a/src/prefiltering/CacheFriendlyOperations.h b/src/prefiltering/CacheFriendlyOperations.h
+index efbfa75..7bad973 100644
+--- a/src/prefiltering/CacheFriendlyOperations.h
++++ b/src/prefiltering/CacheFriendlyOperations.h
+@@ -61,6 +61,10 @@ struct __attribute__((__packed__)) CounterResult {
+             return true;
+         if (second.count > first.count)
+             return false;
++        if (first.id < second.id)
++            return true;
++        if (second.id < first.id)
++            return false;
+         return false;
+     }
+ };
+diff --git a/src/prefiltering/IndexBuilder.cpp b/src/prefiltering/IndexBuilder.cpp
+index c02b404..04494a5 100644
+--- a/src/prefiltering/IndexBuilder.cpp
++++ b/src/prefiltering/IndexBuilder.cpp
+@@ -56,7 +56,8 @@ public:
+ void IndexBuilder::fillDatabase(IndexTable *indexTable, SequenceLookup ** externalLookup,
+                                 BaseMatrix &subMat, ScoreMatrix & three, ScoreMatrix & two, Sequence *seq,
+                                 DBReader<unsigned int> *dbr, size_t dbFrom, size_t dbTo, int kmerThr,
+-                                bool mask, bool maskLowerCaseMode, float maskProb, int maskNrepeats, int targetSearchMode) {
++                                bool mask, bool maskLowerCaseMode, float maskProb, int maskNrepeats,
++                                int targetSearchMode, bool countOnly) {
+     Debug(Debug::INFO) << "Index table: counting k-mers\n";
+ 
+     const bool isProfile = Parameters::isEqualDbtype(seq->getSeqType(), Parameters::DBTYPE_HMM_PROFILE);
+@@ -65,8 +66,13 @@ void IndexBuilder::fillDatabase(IndexTable *indexTable, SequenceLookup ** extern
+     size_t dbSize = dbTo - dbFrom;
+     DbInfo* info = new DbInfo(dbFrom, dbTo, seq->getEffectiveKmerSize(), *dbr);
+ 
+-    *externalLookup = new SequenceLookup(dbSize, info->aaDbSize);
+-    SequenceLookup *sequenceLookup = *externalLookup;
++    SequenceLookup *sequenceLookup = NULL;
++    if (countOnly == false) {
++        *externalLookup = new SequenceLookup(dbSize, info->aaDbSize);
++        sequenceLookup = *externalLookup;
++    } else {
++        *externalLookup = NULL;
++    }
+ 
+     // Look up aux alphabet size for reconstructing packed bytes after masking
+     const Sequence::SeqAuxInfo *auxInfo = Sequence::getAuxInfo(seq->getSeqType());
+@@ -131,10 +137,14 @@ void IndexBuilder::fillDatabase(IndexTable *indexTable, SequenceLookup ** extern
+                     for (int i = 0; i < s.L; i++) {
+                         s.numSequence[i] = s.numSequence[i] * auxAlphabetSize + s.numSequenceAux[i];
+                     }
+-                    sequenceLookup->addSequence(s.numSequence, s.L, id - dbFrom, info->sequenceOffsets[id - dbFrom]);
++                    if (countOnly == false) {
++                        sequenceLookup->addSequence(s.numSequence, s.L, id - dbFrom, info->sequenceOffsets[id - dbFrom]);
++                    }
+                 } else {
+                     unsigned char * seq = (isProfile) ? s.numConsensusSequence : s.numSequence;
+-                    sequenceLookup->addSequence(seq, s.L, id - dbFrom, info->sequenceOffsets[id - dbFrom]);
++                    if (countOnly == false) {
++                        sequenceLookup->addSequence(seq, s.L, id - dbFrom, info->sequenceOffsets[id - dbFrom]);
++                    }
+                 }
+             } else {
+                 // Do not mask if column state sequences are used
+@@ -153,9 +163,13 @@ void IndexBuilder::fillDatabase(IndexTable *indexTable, SequenceLookup ** extern
+                     for (int i = 0; i < s.L; i++) {
+                         s.numSequence[i] = s.numSequence[i] * auxAlphabetSize + s.numSequenceAux[i];
+                     }
+-                    sequenceLookup->addSequence(s.numSequence, s.L, id - dbFrom, info->sequenceOffsets[id - dbFrom]);
++                    if (countOnly == false) {
++                        sequenceLookup->addSequence(s.numSequence, s.L, id - dbFrom, info->sequenceOffsets[id - dbFrom]);
++                    }
+                 } else {
+-                    sequenceLookup->addSequence(s.numSequence, s.L, id - dbFrom, info->sequenceOffsets[id - dbFrom]);
++                    if (countOnly == false) {
++                        sequenceLookup->addSequence(s.numSequence, s.L, id - dbFrom, info->sequenceOffsets[id - dbFrom]);
++                    }
+                 }
+             }
+         }
+@@ -184,6 +198,17 @@ void IndexBuilder::fillDatabase(IndexTable *indexTable, SequenceLookup ** extern
+ 
+     dbr->remapData();
+ 
++    // Split-invariant STEAM statistics only need the per-k-mer target counts.
++    // Leave IndexTable::offsets in its pre-init count representation and avoid
++    // allocating the posting lists or making a second pass over the database.
++    if (countOnly) {
++        delete info;
++        if (idScoreLookup != NULL) {
++            delete[] idScoreLookup;
++        }
++        return;
++    }
++
+     //TODO find smart way to remove extrem k-mers without harming huge protein families
+ //    size_t lowSelectiveResidues = 0;
+ //    const float dbSize = static_cast<float>(dbTo - dbFrom);
+diff --git a/src/prefiltering/IndexBuilder.h b/src/prefiltering/IndexBuilder.h
+index 00d670d..2bdedec 100644
+--- a/src/prefiltering/IndexBuilder.h
++++ b/src/prefiltering/IndexBuilder.h
+@@ -10,7 +10,8 @@ public:
+                              BaseMatrix &subMat,
+                              ScoreMatrix & three,  ScoreMatrix & two, Sequence *seq,
+                              DBReader<unsigned int> *dbr, size_t dbFrom, size_t dbTo, int kmerThr,
+-                             bool mask, bool maskLowerCaseMode, float maskProb, int maskNrepeats, int targetSearchMode);
++                             bool mask, bool maskLowerCaseMode, float maskProb, int maskNrepeats,
++                             int targetSearchMode, bool countOnly = false);
+ };
+ 
+ #endif
+diff --git a/src/prefiltering/Prefiltering.cpp b/src/prefiltering/Prefiltering.cpp
+index 51320fc..ef9f50f 100644
+--- a/src/prefiltering/Prefiltering.cpp
++++ b/src/prefiltering/Prefiltering.cpp
+@@ -17,6 +17,7 @@
+ #include <cstring>
+ #include <algorithm>
+ #include <chrono>
++#include <limits>
+ #include <vector>
+ #include <sys/mman.h>
+ 
+@@ -67,8 +68,12 @@ Prefiltering::Prefiltering(const std::string &queryDB,
+     tdbrExternalAux = NULL;
+     sequenceLookupExternalAux = NULL;
+     externalAuxSubMat = NULL;
++    globalKmerCountTable = NULL;
+     globalBucketThreshold = 0;
+     bucketStatisticsReady = false;
++    steamSplitInvariant = getenv("STEAM_SPLIT_INVARIANT") != NULL
++        && strcmp(getenv("STEAM_SPLIT_INVARIANT"), "0") != 0;
++    requestedMaxResListLen = maxResListLen;
+     const char *bucketCoverage = getenv("STEAM_BUCKET_COVERAGE_PCT");
+     steamBucketCoveragePct = bucketCoverage != NULL ? atof(bucketCoverage) : 10.0;
+     if (steamBucketCoveragePct < 0.0 || steamBucketCoveragePct > 100.0) {
+@@ -203,6 +208,7 @@ Prefiltering::Prefiltering(const std::string &queryDB,
+     // restrict amount of allocated memory if all results are requested
+     // INT_MAX would allocate 72GB RAM per thread for no reason
+     maxResListLen = std::min(tdbr->getSize(), maxResListLen);
++    requestedMaxResListLen = maxResListLen;
+ 
+     // investigate if it makes sense to mask the profile consensus sequence
+     if (Parameters::isEqualDbtype(targetSeqType, Parameters::DBTYPE_HMM_PROFILE)) {
+@@ -274,6 +280,17 @@ Prefiltering::Prefiltering(const std::string &queryDB,
+     setupSplit(*tdbr, alphabetSize - 1, querySeqType,
+                threads, templateDBIsIndex, memoryLimit, qdbr->getSize(),
+                maxResListLen, kmerSize, splits, splitMode);
++    if (steamSplitInvariant && splitMode == Parameters::TARGET_DB_SPLIT
++            && splits > 1) {
++        // MMseqs normally divides max-seqs statistically across target splits.
++        // STEAM target databases can be ordered by cluster, so homologs are not
++        // exchangeable across splits. Retain the complete allowance per split;
++        // mergeTargetSplits applies the requested global cap after sorting.
++        maxResListLen = requestedMaxResListLen;
++        Debug(Debug::INFO)
++            << "STEAM split invariance: retaining up to " << maxResListLen
++            << " candidates per target split before the global merge cap\n";
++    }
+ 
+     if(Parameters::isEqualDbtype(targetSeqType, Parameters::DBTYPE_NUCLEOTIDES) == false){
+         const bool isProfileSearch = Parameters::isEqualDbtype(querySeqType, Parameters::DBTYPE_HMM_PROFILE) ||
+@@ -295,6 +312,10 @@ Prefiltering::Prefiltering(const std::string &queryDB,
+         kmerSubMat->alphabetSize = alphabetSize;
+     }
+ 
++    if (splitMode == Parameters::TARGET_DB_SPLIT && splits > 1) {
++        buildGlobalKmerStatistics();
++    }
++
+     if (splitMode == Parameters::QUERY_DB_SPLIT) {
+         // create the whole index table
+         getIndexTable(0, 0, tdbr->getSize());
+@@ -335,6 +356,9 @@ Prefiltering::~Prefiltering() {
+     if (sequenceLookupExternalAux != NULL) {
+         delete sequenceLookupExternalAux;
+     }
++    if (globalKmerCountTable != NULL) {
++        delete globalKmerCountTable;
++    }
+ 
+     if (externalAuxScoring) {
+         if (sameQTDB == false) {
+@@ -474,7 +498,9 @@ void Prefiltering::setupSplit(DBReader<unsigned int>& tdbr, const int alphabetSi
+     }
+ }
+ 
+-void Prefiltering::mergeTargetSplits(const std::string &outDB, const std::string &outDBIndex, const std::vector<std::pair<std::string, std::string>> &fileNames, unsigned int threads) {
++void Prefiltering::mergeTargetSplits(const std::string &outDB, const std::string &outDBIndex,
++                                     const std::vector<std::pair<std::string, std::string>> &fileNames,
++                                     unsigned int threads, size_t maxMergedResults) {
+     // we assume that the hits are in the same order
+     const size_t splits = fileNames.size();
+ 
+@@ -562,7 +588,8 @@ void Prefiltering::mergeTargetSplits(const std::string &outDB, const std::string
+             if (hits.size() > 1) {
+                 SORT_SERIAL(hits.begin(), hits.end(), hit_t::compareHitsByScoreAndId);
+             }
+-            for (size_t i = 0; i < hits.size(); ++i) {
++            const size_t retainedHits = std::min(hits.size(), maxMergedResults);
++            for (size_t i = 0; i < retainedHits; ++i) {
+                 int len = QueryMatcher::prefilterHitToBuffer(buffer, hits[i]);
+                 result.append(buffer, len);
+             }
+@@ -635,7 +662,7 @@ void Prefiltering::getIndexTable(int split, size_t dbFrom, size_t dbSize) {
+                                    _3merSubMatrix, _2merSubMatrix,
+                                    &tseq, tdbr, dbFrom, dbFrom + dbSize,
+                                    localKmerThr, maskMode, maskLowerCaseMode,
+-                                   maskProb, maskNrepeats, targetSearchMode);
++                                   maskProb, maskNrepeats, targetSearchMode, false);
+ 
+         // sequenceLookup has to be temporarily present to speed up masking
+         // afterwards its not needed anymore without diagonal scoring
+@@ -648,15 +675,51 @@ void Prefiltering::getIndexTable(int split, size_t dbFrom, size_t dbSize) {
+         tdbr->remapData();
+         Debug(Debug::INFO) << "Time for index table init: " << timer.lap() << "\n";
+     }
+-    if (bucketStatisticsReady == false) {
+-        setGlobalBucketThreshold(indexTable);
++    if (globalKmerCountTable == NULL && bucketStatisticsReady == false) {
++        setGlobalBucketThreshold(indexTable, false);
+     }
+     if (externalAuxScoring) {
+         buildExternalAuxLookup(dbFrom, dbSize);
+     }
+ }
+ 
+-void Prefiltering::setGlobalBucketThreshold(IndexTable *counts) {
++void Prefiltering::buildGlobalKmerStatistics() {
++    if (steamBucketCoveragePct <= 0.0) {
++        bucketStatisticsReady = true;
++        return;
++    }
++
++    Timer timer;
++    Debug(Debug::INFO)
++        << "STEAM split invariance: counting exact k-mers across the complete target database\n";
++    const int countAlphabetSize = (
++        Parameters::isEqualDbtype(targetSeqType, Parameters::DBTYPE_NUCLEOTIDES)
++        || Parameters::isEqualDbtype(targetSeqType, Parameters::DBTYPE_AMINO_ACIDS))
++        ? alphabetSize - 1 : alphabetSize;
++    globalKmerCountTable = new IndexTable(countAlphabetSize, kmerSize, false);
++    Sequence tseq(maxSeqLen, targetSeqType, kmerSubMat, kmerSize, spacedKmer,
++                  aaBiasCorrection, true, spacedKmerPattern);
++    SequenceLookup *unusedLookup = NULL;
++    const int localKmerThr = (
++        Parameters::isEqualDbtype(querySeqType, Parameters::DBTYPE_HMM_PROFILE)
++        || Parameters::isEqualDbtype(querySeqType, Parameters::DBTYPE_NUCLEOTIDES)
++        || (Parameters::isEqualDbtype(targetSeqType, Parameters::DBTYPE_HMM_PROFILE) == false
++            && targetSearchMode == 0 && takeOnlyBestKmer))
++        ? 0 : kmerThr;
++    IndexBuilder::fillDatabase(
++        globalKmerCountTable, &unusedLookup, *kmerSubMat,
++        _3merSubMatrix, _2merSubMatrix, &tseq, tdbr, 0, tdbr->getSize(),
++        localKmerThr, maskMode, maskLowerCaseMode, maskProb, maskNrepeats,
++        targetSearchMode, true);
++    if (unusedLookup != NULL) {
++        Debug(Debug::ERROR) << "Count-only k-mer pass unexpectedly allocated a sequence lookup\n";
++        EXIT(EXIT_FAILURE);
++    }
++    setGlobalBucketThreshold(globalKmerCountTable, true);
++    Debug(Debug::INFO) << "Time for complete-target k-mer statistics: " << timer.lap() << "\n";
++}
++
++void Prefiltering::setGlobalBucketThreshold(IndexTable *counts, bool rawCounts) {
+     bucketStatisticsReady = true;
+     globalBucketThreshold = 0;
+     if (steamBucketCoveragePct <= 0.0) {
+@@ -669,7 +732,9 @@ void Prefiltering::setGlobalBucketThreshold(IndexTable *counts) {
+     bucketSizes.reserve(tableSize);
+     size_t totalEntries = 0;
+     for (size_t kmer = 0; kmer < tableSize; kmer++) {
+-        const size_t bucketSize = counts->getOffset(kmer + 1) - counts->getOffset(kmer);
++        const size_t bucketSize = rawCounts
++            ? counts->getOffset(kmer)
++            : counts->getOffset(kmer + 1) - counts->getOffset(kmer);
+         if (bucketSize > 0) {
+             bucketSizes.push_back(bucketSize);
+             totalEntries += bucketSize;
+@@ -991,6 +1056,8 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
+                              diagonalScoring, minDiagScoreThr, takeOnlyBestKmer, targetSeqType==Parameters::DBTYPE_NUCLEOTIDES,
+                              ungappedSubMatAux, targetSeqType,
+                              sequenceLookupExternalAux, externalAuxSubMat,
++                             globalKmerCountTable != NULL
++                                 ? globalKmerCountTable->getOffsets() : NULL,
+                              globalBucketThreshold);
+ 
+         if (seq.profile_matrix != NULL) {
+@@ -1206,7 +1273,10 @@ BaseMatrix *Prefiltering::getSubstitutionMatrix(const MultiParam<NuclAA<std::str
+ void Prefiltering::mergePrefilterSplits(const std::string &outDB, const std::string &outDBIndex,
+                               const std::vector<std::pair<std::string, std::string>> &splitFiles) {
+     if (splitMode == Parameters::TARGET_DB_SPLIT) {
+-        mergeTargetSplits(outDB, outDBIndex, splitFiles, threads);
++        mergeTargetSplits(
++            outDB, outDBIndex, splitFiles, threads,
++            steamSplitInvariant ? requestedMaxResListLen
++                                : std::numeric_limits<size_t>::max());
+     } else if (splitMode == Parameters::QUERY_DB_SPLIT) {
+         DBWriter::mergeResults(outDB, outDBIndex, splitFiles);
+     }
+diff --git a/src/prefiltering/Prefiltering.h b/src/prefiltering/Prefiltering.h
+index 07c0a79..e78f87a 100644
+--- a/src/prefiltering/Prefiltering.h
++++ b/src/prefiltering/Prefiltering.h
+@@ -60,7 +60,8 @@ public:
+                                 const SeqProf<int> kmerScore, const int kmerSize);
+ 
+     static void mergeTargetSplits(const std::string &outDB, const std::string &outDBIndex,
+-                                  const std::vector<std::pair<std::string, std::string>> &fileNames, unsigned int threads);
++                                  const std::vector<std::pair<std::string, std::string>> &fileNames,
++                                  unsigned int threads, size_t maxMergedResults);
+ 
+ private:
+     const std::string queryDB;
+@@ -84,6 +85,7 @@ private:
+     SequenceLookup *sequenceLookupExternalAux;
+     BaseMatrix *externalAuxSubMat;
+     bool externalAuxScoring;
++    IndexTable *globalKmerCountTable;
+     size_t globalBucketThreshold;
+     double steamBucketCoveragePct;
+     bool bucketStatisticsReady;
+@@ -108,6 +110,8 @@ private:
+     int targetSearchMode;
+     bool takeOnlyBestKmer;
+     size_t maxResListLen;
++    size_t requestedMaxResListLen;
++    bool steamSplitInvariant;
+ 
+     const float sensitivity;
+     size_t maxSeqLen;
+@@ -144,7 +148,8 @@ private:
+     // needed for index lookup
+     void getIndexTable(int split, size_t dbFrom, size_t dbSize);
+     void buildExternalAuxLookup(size_t dbFrom, size_t dbSize);
+-    void setGlobalBucketThreshold(IndexTable *counts);
++    void buildGlobalKmerStatistics();
++    void setGlobalBucketThreshold(IndexTable *counts, bool rawCounts);
+ 
+     void printStatistics(const statistics_t &stats, std::list<int> **reslens,
+                          unsigned int resLensSize, size_t empty, size_t maxResults);
+diff --git a/src/prefiltering/QueryMatcher.cpp b/src/prefiltering/QueryMatcher.cpp
+index e53d64b..2332893 100644
+--- a/src/prefiltering/QueryMatcher.cpp
++++ b/src/prefiltering/QueryMatcher.cpp
+@@ -34,6 +34,7 @@ QueryMatcher::QueryMatcher(IndexTable *indexTable, SequenceLookup *sequenceLooku
+                            int targetSeqType,
+                            SequenceLookup *externalAuxSequenceLookup,
+                            BaseMatrix *externalAuxSubMat,
++                           const size_t *globalKmerCounts,
+                            size_t globalBucketThreshold)
+         : idx(indexTable->getAlphabetSize(), kmerSize), isNucleotide(isNucleotide), hook(NULL)
+ {
+@@ -78,6 +79,7 @@ QueryMatcher::QueryMatcher(IndexTable *indexTable, SequenceLookup *sequenceLooku
+     this->externalAuxSubMat = externalAuxSubMat;
+     this->currentQuerySeq = NULL;
+     this->externalAuxQuerySeq = NULL;
++    this->globalKmerCounts = globalKmerCounts;
+     this->globalBucketThreshold = globalBucketThreshold;
+     if (diagonalScoring) {
+         // Look up remap tables from the Sequence registry (registered by downstream projects e.g. Foldseek)
+@@ -268,7 +270,9 @@ std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned
+ }
+ 
+ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
+-    // Prefiltering computes the threshold once for this target database.
++    // The threshold and optional count table are computed once from the full
++    // target database by Prefiltering.  For target splits, local posting lists
++    // are still used for membership, while exclusion uses global counts.
+     const size_t steamMaxBucket = globalBucketThreshold;
+     size_t steamSkippedKmers = 0;
+     // go through the query sequence
+@@ -304,11 +308,10 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
+         kmerGenerator->setThreshold(kmerMatchScore);
+ 
+         const size_t *index;
+-        size_t exactKmer;
++        const size_t exactKmer = idx.int2index(kmer);
+         size_t kmerElementSize;
+         if (takeOnlyBestKmer) {
+             kmerElementSize = 1;
+-            exactKmer = idx.int2index(kmer);
+             index = &exactKmer;
+         } else {
+             std::pair<size_t*, size_t> kmerList = kmerGenerator->generateKmerList(kmer);
+@@ -326,7 +329,9 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
+ 
+         for (unsigned int kmerPos = 0; kmerPos < kmerElementSize; kmerPos++) {
+             const IndexEntryLocal *entries = indexTable->getDBSeqList(index[kmerPos], &seqListSize);
+-            if (steamMaxBucket > 0 && seqListSize > steamMaxBucket) {
++            const size_t globalSeqListSize = globalKmerCounts != NULL
++                ? globalKmerCounts[index[kmerPos]] : seqListSize;
++            if (steamMaxBucket > 0 && globalSeqListSize > steamMaxBucket) {
+                 steamSkippedKmers++;
+                 continue;
+             }
+diff --git a/src/prefiltering/QueryMatcher.h b/src/prefiltering/QueryMatcher.h
+index 13d1a46..95c2376 100644
+--- a/src/prefiltering/QueryMatcher.h
++++ b/src/prefiltering/QueryMatcher.h
+@@ -61,6 +61,7 @@ public:
+                  int targetSeqType = 0,
+                  SequenceLookup *externalAuxSequenceLookup = NULL,
+                  BaseMatrix *externalAuxSubMat = NULL,
++                 const size_t *globalKmerCounts = NULL,
+                  size_t globalBucketThreshold = 0);
+     ~QueryMatcher();
+ 
+@@ -211,6 +212,7 @@ protected:
+ 
+     bool isNucleotide;
+ 
++    const size_t *globalKmerCounts;
+     size_t globalBucketThreshold;
+ 
+     const static size_t SCORE_RANGE = 256;

@@ -1,18 +1,16 @@
-Unable to open session log file "/scicore/home/schwede/durair0000/.cache/starship/session_1437131349968888.log": Os { code: 30, kind: ReadOnlyFilesystem, message: "Read-only file system" }!
 diff --git a/src/prefiltering/Prefiltering.cpp b/src/prefiltering/Prefiltering.cpp
-index 92d957f3..53886863 100644
+index 78bd087..51320fc 100644
 --- a/src/prefiltering/Prefiltering.cpp
 +++ b/src/prefiltering/Prefiltering.cpp
-@@ -13,6 +13,8 @@
- #include "Parameters.h"
+@@ -14,6 +14,7 @@
  #include "MemoryMapped.h"
  #include "FastSort.h"
-+#include <cstdlib>
+ #include <cstdlib>
 +#include <cstring>
- #include <sys/mman.h>
- 
- #ifdef OPENMP
-@@ -56,6 +58,17 @@ Prefiltering::Prefiltering(const std::string &queryDB,
+ #include <algorithm>
+ #include <chrono>
+ #include <vector>
+@@ -60,6 +61,12 @@ Prefiltering::Prefiltering(const std::string &queryDB,
          threads(static_cast<unsigned int>(par.threads)),
          compressed(par.compressed) {
      sameQTDB = isSameQTDB();
@@ -22,25 +20,30 @@ index 92d957f3..53886863 100644
 +    tdbrExternalAux = NULL;
 +    sequenceLookupExternalAux = NULL;
 +    externalAuxSubMat = NULL;
-+
+     globalBucketThreshold = 0;
+     bucketStatisticsReady = false;
+     const char *bucketCoverage = getenv("STEAM_BUCKET_COVERAGE_PCT");
+@@ -69,6 +76,11 @@ Prefiltering::Prefiltering(const std::string &queryDB,
+         EXIT(EXIT_FAILURE);
+     }
+ 
 +    if (externalAuxScoring && diagonalScoring == false) {
 +        Debug(Debug::ERROR) << "Combined TEA+AA ungapped scoring requires --diag-score 1\n";
 +        EXIT(EXIT_FAILURE);
 +    }
- 
++
      // init the substitution matrices
      switch (querySeqType & Parameters::DBTYPE_MASK) {
-@@ -66,7 +79,8 @@ Prefiltering::Prefiltering(const std::string &queryDB,
+         case Parameters::DBTYPE_NUCLEOTIDES:
+@@ -78,6 +90,7 @@ Prefiltering::Prefiltering(const std::string &queryDB,
              break;
          case Parameters::DBTYPE_AMINO_ACIDS:
              kmerSubMat = getSubstitutionMatrix(seedScoringMatrixFile, par.alphabetSize, 8.0, false, false);
--            ungappedSubMat = getSubstitutionMatrix(scoringMatrixFile, par.alphabetSize, 2.0, false, false);
 +            // Adding companion AA scoring must preserve the TEA ungapped score scale.
-+            ungappedSubMat = getSubstitutionMatrix(scoringMatrixFile, par.alphabetSize, 2.0, false, false);
+             ungappedSubMat = getSubstitutionMatrix(scoringMatrixFile, par.alphabetSize, 2.0, false, false);
              alphabetSize = kmerSubMat->alphabetSize;
              break;
-         case Parameters::DBTYPE_HMM_PROFILE:
-@@ -198,6 +212,42 @@ Prefiltering::Prefiltering(const std::string &queryDB,
+@@ -210,6 +223,52 @@ Prefiltering::Prefiltering(const std::string &queryDB,
          qdbr = new DBReader<unsigned int>(queryDB.c_str(), queryDBIndex.c_str(), threads, DBReader<unsigned int>::USE_INDEX|DBReader<unsigned int>::USE_DATA);
          qdbr->open(DBReader<unsigned int>::LINEAR_ACCCESS);
      }
@@ -77,13 +80,23 @@ index 92d957f3..53886863 100644
 +        }
 +        const char *weightString = getenv("STEAM_UNGAPPED_AA_WEIGHT");
 +        const float auxWeight = (weightString != NULL) ? static_cast<float>(atof(weightString)) : 1.4f;
-+        externalAuxSubMat = new SubstitutionMatrix(auxMatrixSource, auxWeight, -0.2f);
++        // Direct prefilter callers may use the same bundled matrix names as
++        // --sub-mat; workflows can also pass serialized matrices or file paths.
++        std::string auxMatrix(auxMatrixSource);
++        for (const auto &matrix : par.substitutionMatrices) {
++            if (auxMatrix == matrix.name) {
++                auxMatrix += ":" + std::string(reinterpret_cast<const char *>(matrix.subMatData),
++                                              matrix.subMatDataLen);
++                break;
++            }
++        }
++        externalAuxSubMat = new SubstitutionMatrix(auxMatrix.c_str(), auxWeight, -0.2f);
 +        Debug(Debug::INFO) << "Combined TEA+AA ungapped diagonal scoring enabled (AA weight " << auxWeight << ")\n";
 +    }
      Debug(Debug::INFO) << "Query database size: " << qdbr->getSize() << " type: " << Parameters::getDbTypeName(querySeqType) << "\n";
  
      setupSplit(*tdbr, alphabetSize - 1, querySeqType,
-@@ -261,6 +311,19 @@ Prefiltering::~Prefiltering() {
+@@ -273,6 +332,19 @@ Prefiltering::~Prefiltering() {
      if (sequenceLookup != NULL) {
          delete sequenceLookup;
      }
@@ -103,15 +116,20 @@ index 92d957f3..53886863 100644
  
      tdbr->close();
      delete tdbr;
-@@ -564,6 +627,34 @@ void Prefiltering::getIndexTable(int split, size_t dbFrom, size_t dbSize) {
-         tdbr->remapData();
-         Debug(Debug::INFO) << "Time for index table init: " << timer.lap() << "\n";
+@@ -579,6 +651,9 @@ void Prefiltering::getIndexTable(int split, size_t dbFrom, size_t dbSize) {
+     if (bucketStatisticsReady == false) {
+         setGlobalBucketThreshold(indexTable);
      }
 +    if (externalAuxScoring) {
 +        buildExternalAuxLookup(dbFrom, dbSize);
 +    }
-+}
-+
+ }
+ 
+ void Prefiltering::setGlobalBucketThreshold(IndexTable *counts) {
+@@ -637,6 +712,31 @@ void Prefiltering::setGlobalBucketThreshold(IndexTable *counts) {
+                        << " cumsum=" << milliseconds(sorted, completed) << "ms)\n";
+ }
+ 
 +void Prefiltering::buildExternalAuxLookup(size_t dbFrom, size_t dbSize) {
 +    if (sequenceLookupExternalAux != NULL) {
 +        delete sequenceLookupExternalAux;
@@ -135,10 +153,12 @@ index 92d957f3..53886863 100644
 +                           tdbrExternalAux->getData(id, 0), tdbrExternalAux->getSeqLen(id));
 +        sequenceLookupExternalAux->addSequence(&auxSeq);
 +    }
- }
- 
++}
++
  bool Prefiltering::isSameQTDB() {
-@@ -760,6 +851,10 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
+     //  check if when qdb and tdb have the same name an index extension exists
+     std::string check(targetDB);
+@@ -831,6 +931,10 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
              delete sequenceLookup;
              sequenceLookup = NULL;
          }
@@ -149,7 +169,7 @@ index 92d957f3..53886863 100644
  
          getIndexTable(split, dbFrom, dbSize);
      } else if (splitMode == Parameters::QUERY_DB_SPLIT) {
-@@ -808,10 +903,14 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
+@@ -879,10 +983,14 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
          thread_idx = static_cast<unsigned int>(omp_get_thread_num());
  #endif
          Sequence seq(qdbr->getMaxSeqLen(), querySeqType, kmerSubMat, kmerSize, spacedKmer, aaBiasCorrection, true, spacedKmerPattern);
@@ -159,13 +179,12 @@ index 92d957f3..53886863 100644
          QueryMatcher matcher(indexTable, sequenceLookup, kmerSubMat,  ungappedSubMat,
                               kmerThr, kmerSize, dbSize, std::max(tdbr->getMaxSeqLen(),qdbr->getMaxSeqLen()), maxResListLen, aaBiasCorrection, aaBiasCorrectionScale,
                               diagonalScoring, minDiagScoreThr, takeOnlyBestKmer, targetSeqType==Parameters::DBTYPE_NUCLEOTIDES,
--                             ungappedSubMatAux, targetSeqType);
-+                             ungappedSubMatAux, targetSeqType,
-+                             sequenceLookupExternalAux, externalAuxSubMat);
+                              ungappedSubMatAux, targetSeqType,
++                             sequenceLookupExternalAux, externalAuxSubMat,
+                              globalBucketThreshold);
  
          if (seq.profile_matrix != NULL) {
-             matcher.setProfileMatrix(seq.profile_matrix);
-@@ -836,6 +935,15 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
+@@ -908,6 +1016,15 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
              char *seqData = qdbr->getData(id, thread_idx);
              unsigned int qKey = qdbr->getDbKey(id);
              seq.mapSequence(id, qKey, seqData, qdbr->getSeqLen(id));
@@ -181,7 +200,7 @@ index 92d957f3..53886863 100644
              size_t targetSeqId = UINT_MAX;
              if (sameQTDB || includeIdentical) {
                  targetSeqId = tdbr->getId(seq.getDbKey());
-@@ -854,7 +962,9 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
+@@ -926,7 +1043,9 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
              if (taxonomyHook != NULL) {
                  taxonomyHook->setDbFrom(dbFrom);
              }
@@ -192,7 +211,7 @@ index 92d957f3..53886863 100644
              size_t resultSize = prefResults.second;
              const float queryLength = static_cast<float>(qdbr->getSeqLen(id));
              for (size_t i = 0; i < resultSize; i++) {
-@@ -942,6 +1052,10 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
+@@ -1014,6 +1133,10 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
              delete sequenceLookup;
              sequenceLookup = NULL;
          }
@@ -204,7 +223,7 @@ index 92d957f3..53886863 100644
          resultReader.open(DBReader<unsigned int>::NOSORT);
          resultReader.readMmapedDataInMemory();
 diff --git a/src/prefiltering/Prefiltering.h b/src/prefiltering/Prefiltering.h
-index fa5830c0..f546a2d6 100644
+index b03ca95..07c0a79 100644
 --- a/src/prefiltering/Prefiltering.h
 +++ b/src/prefiltering/Prefiltering.h
 @@ -70,6 +70,8 @@ private:
@@ -223,39 +242,45 @@ index fa5830c0..f546a2d6 100644
 +    SequenceLookup *sequenceLookupExternalAux;
 +    BaseMatrix *externalAuxSubMat;
 +    bool externalAuxScoring;
- 
-     // parameter
-     int splits;
-@@ -135,6 +140,7 @@ private:
+     size_t globalBucketThreshold;
+     double steamBucketCoveragePct;
+     bool bucketStatisticsReady;
+@@ -138,6 +143,7 @@ private:
  
      // needed for index lookup
      void getIndexTable(int split, size_t dbFrom, size_t dbSize);
 +    void buildExternalAuxLookup(size_t dbFrom, size_t dbSize);
+     void setGlobalBucketThreshold(IndexTable *counts);
  
      void printStatistics(const statistics_t &stats, std::list<int> **reslens,
-                          unsigned int resLensSize, size_t empty, size_t maxResults);
 diff --git a/src/prefiltering/QueryMatcher.cpp b/src/prefiltering/QueryMatcher.cpp
-index 028ef86f..619ee3ee 100644
+index c746720..e53d64b 100644
 --- a/src/prefiltering/QueryMatcher.cpp
 +++ b/src/prefiltering/QueryMatcher.cpp
-@@ -1,4 +1,5 @@
+@@ -1,7 +1,13 @@
  #include "SubstitutionMatrix.h"
 +#include <cstdlib>
++#include <cstring>
  #include "QueryMatcher.h"
  #include "FastSort.h"
  #include "Util.h"
-@@ -30,7 +31,9 @@ QueryMatcher::QueryMatcher(IndexTable *indexTable, SequenceLookup *sequenceLooku
-                            unsigned int maxSeqLen, size_t maxHitsPerQuery, bool aaBiasCorrection, float aaBiasCorrectionScale,
++#include <algorithm>
++#include <cmath>
++#include <limits>
++#include <vector>
+ 
+ #define FE_1(WHAT, X) WHAT(X)
+ #define FE_2(WHAT, X, ...) WHAT(X)FE_1(WHAT, __VA_ARGS__)
+@@ -26,6 +32,8 @@ QueryMatcher::QueryMatcher(IndexTable *indexTable, SequenceLookup *sequenceLooku
                             bool diagonalScoring, unsigned int minDiagScoreThr, bool takeOnlyBestKmer, bool isNucleotide,
                             BaseMatrix *ungappedAlignmentSubMatAux,
--                           int targetSeqType)
-+                           int targetSeqType,
+                            int targetSeqType,
 +                           SequenceLookup *externalAuxSequenceLookup,
-+                           BaseMatrix *externalAuxSubMat)
++                           BaseMatrix *externalAuxSubMat,
+                            size_t globalBucketThreshold)
          : idx(indexTable->getAlphabetSize(), kmerSize), isNucleotide(isNucleotide), hook(NULL)
  {
-     this->kmerSubMat = kmerSubMat;
-@@ -69,6 +72,11 @@ QueryMatcher::QueryMatcher(IndexTable *indexTable, SequenceLookup *sequenceLooku
+@@ -65,6 +73,11 @@ QueryMatcher::QueryMatcher(IndexTable *indexTable, SequenceLookup *sequenceLooku
      // needed for p-value calc.
      ungappedAlignment = NULL;
      ungappedAlignmentAux = NULL;
@@ -264,10 +289,10 @@ index 028ef86f..619ee3ee 100644
 +    this->externalAuxSubMat = externalAuxSubMat;
 +    this->currentQuerySeq = NULL;
 +    this->externalAuxQuerySeq = NULL;
+     this->globalBucketThreshold = globalBucketThreshold;
      if (diagonalScoring) {
          // Look up remap tables from the Sequence registry (registered by downstream projects e.g. Foldseek)
-         const Sequence::SeqAuxInfo *auxInfo = Sequence::getAuxInfo(targetSeqType);
-@@ -105,7 +113,10 @@ QueryMatcher::~QueryMatcher(){
+@@ -102,7 +115,10 @@ QueryMatcher::~QueryMatcher(){
      delete kmerGenerator;
  }
  
@@ -279,7 +304,7 @@ index 028ef86f..619ee3ee 100644
      querySeq->resetCurrPos();
  //    std::cout << "Id: " << querySeq->getId() << std::endl;
      memset(scoreSizes, 0, SCORE_RANGE * sizeof(unsigned int));
-@@ -132,9 +143,18 @@ std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned
+@@ -129,9 +145,18 @@ std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned
      }
      std::pair<hit_t *, size_t> queryResult;
      if (diagonalScoring) {
@@ -301,7 +326,15 @@ index 028ef86f..619ee3ee 100644
              for (size_t i = 0; i < resultSize; i++) {
                  scoreBackup[i] = foundDiagonals[i].count;
                  foundDiagonals[i].count = 0;
-@@ -466,6 +486,9 @@ void QueryMatcher::updateScoreBins(CounterResult *result, size_t elementCount) {
+@@ -298,6 +323,7 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
+         //std::cout << "\t" << kmerMatchScore << std::endl;
+         kmerListLen += kmerElementSize;
+ 
++
+         for (unsigned int kmerPos = 0; kmerPos < kmerElementSize; kmerPos++) {
+             const IndexEntryLocal *entries = indexTable->getDBSeqList(index[kmerPos], &seqListSize);
+             if (steamMaxBucket > 0 && seqListSize > steamMaxBucket) {
+@@ -403,6 +429,9 @@ void QueryMatcher::updateScoreBins(CounterResult *result, size_t elementCount) {
  }
  
  unsigned int QueryMatcher::scoreSingleSequenceCombined(CounterResult &result) {
@@ -311,7 +344,7 @@ index 028ef86f..619ee3ee 100644
      unsigned int score = ungappedAlignment->scoreSingelSequenceByCounterResult(result);
      if (ungappedAlignmentAux != NULL) {
          score += ungappedAlignmentAux->scoreSingelSequenceByCounterResult(result);
-@@ -473,6 +496,43 @@ unsigned int QueryMatcher::scoreSingleSequenceCombined(CounterResult &result) {
+@@ -410,6 +439,43 @@ unsigned int QueryMatcher::scoreSingleSequenceCombined(CounterResult &result) {
      return score;
  }
  
@@ -355,7 +388,29 @@ index 028ef86f..619ee3ee 100644
  template <int TYPE>
  std::pair<hit_t*, size_t> QueryMatcher::getResult(CounterResult * results,
                                                    size_t resultSize,
-@@ -639,8 +699,17 @@ std::pair<size_t, unsigned int> QueryMatcher::rescoreHits(Sequence * querySeq, u
+@@ -417,6 +483,12 @@ std::pair<hit_t*, size_t> QueryMatcher::getResult(CounterResult * results,
+                                                   const unsigned short thr,
+                                                   UngappedAlignment *align,
+                                                   const int rescaleScore) {
++    // Radix bins preserve encounter order within score ties. That order changes
++    // when the target database is split. Resolve ties by target id before the
++    // max-seqs cap so split and unsplit searches retain the same candidates.
++    if (resultSize > 1) {
++        SORT_SERIAL(results, results + resultSize, CounterResult::sortScore);
++    }
+     size_t currentHits = 0;
+     if (id != UINT_MAX) {
+         hit_t *result = (resList + 0);
+@@ -447,7 +519,7 @@ std::pair<hit_t*, size_t> QueryMatcher::getResult(CounterResult * results,
+             result->seqId = seqIdCurr;
+             result->prefScore = scoreCurr;
+             result->diagonal = diagCurr;
+-            //printf("%d\t%d\t%f\t%f\t%f\t%f\t%f\n", result->seqId, scoreCurr, seqLens[seqIdCurr], mu, logMatchProb, logScoreFactorial[scoreCurr]);
++                //printf("%d\t%d\t%f\t%f\t%f\t%f\t%f\n", result->seqId, scoreCurr, seqLens[seqIdCurr], mu, logMatchProb, logScoreFactorial[scoreCurr]);
+             if (TYPE == KMER_SCORE) {
+                 // make sure score is not great > 255
+                 result->prefScore = scoreCurr;
+@@ -576,8 +648,17 @@ std::pair<size_t, unsigned int> QueryMatcher::rescoreHits(Sequence * querySeq, u
                                                            size_t resultSize, UngappedAlignment *align, int lowerBoundScore) {
      size_t elements = 0;
      const unsigned char * query = querySeq->numSequence;
@@ -376,17 +431,16 @@ index 028ef86f..619ee3ee 100644
          maxSelfScore += ungappedAlignmentAux->scoreSingleSequence(std::make_pair(queryAux, querySeq->L), 0, 0);
      }
 diff --git a/src/prefiltering/QueryMatcher.h b/src/prefiltering/QueryMatcher.h
-index ed8d0ad5..5f63bbfb 100644
+index 0de45d4..13d1a46 100644
 --- a/src/prefiltering/QueryMatcher.h
 +++ b/src/prefiltering/QueryMatcher.h
-@@ -58,12 +58,15 @@ public:
-                  size_t maxHitsPerQuery, bool aaBiasCorrection, float aaBiasCorrectionScale, bool diagonalScoringMode,
+@@ -59,12 +59,16 @@ public:
                   unsigned int minDiagScoreThr, bool takeOnlyBestKmer, bool isNucleotide,
                   BaseMatrix *ungappedAlignmentSubMatAux = NULL,
--                 int targetSeqType = 0);
-+                 int targetSeqType = 0,
+                  int targetSeqType = 0,
 +                 SequenceLookup *externalAuxSequenceLookup = NULL,
-+                 BaseMatrix *externalAuxSubMat = NULL);
++                 BaseMatrix *externalAuxSubMat = NULL,
+                  size_t globalBucketThreshold = 0);
      ~QueryMatcher();
  
      // returns result for the sequence
@@ -394,10 +448,11 @@ index ed8d0ad5..5f63bbfb 100644
 -    std::pair<hit_t*, size_t> matchQuery(Sequence *querySeq, unsigned int identityId, bool isNucleotide);
 +    std::pair<hit_t*, size_t> matchQuery(Sequence *querySeq, unsigned int identityId, bool isNucleotide,
 +                                        Sequence *externalAuxQuerySeq = NULL);
++
  
      void setQueryMatcherHook(QueryMatcherHook* hook) {
          this->hook = hook;
-@@ -165,6 +168,11 @@ protected:
+@@ -166,6 +170,11 @@ protected:
      // matcher for diagonal
      UngappedAlignment *ungappedAlignment;
      UngappedAlignment *ungappedAlignmentAux;
@@ -409,7 +464,7 @@ index ed8d0ad5..5f63bbfb 100644
  
      // score distribution of current query
      unsigned int *scoreSizes;
-@@ -207,6 +215,12 @@ protected:
+@@ -210,6 +219,12 @@ protected:
  
      void updateScoreBins(CounterResult *result, size_t elementCount);
      unsigned int scoreSingleSequenceCombined(CounterResult &result);
