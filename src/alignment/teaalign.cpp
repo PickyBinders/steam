@@ -10,27 +10,42 @@
 #include "SubstitutionMatrix.h"
 #include "FileUtil.h"
 #include "FastSort.h"
+#include "QueryMatcher.h"
+#include "DatabaseDiversity.h"
+#include "AlignmentSeedEvidence.h"
+#include "seed_markov.txt.h"
 
 #include <cmath>
+#include <cstdlib>
 
 #ifdef OPENMP
 #include <omp.h>
 #endif
 
-// Log-linear E-value model following Edgar & Sahakyan (2025).
-// E(s) = P(FP) * (H/Q) * 10^(m*s + c)
-// where s = raw alignment score, H/Q = total reported hits / number of queries.
-// m, c, P(FP) are configurable via --loglinear-m, --loglinear-c, --p-fp.
-static double computeEvalue(double rawScore, double hitsPerQuery, double m_ln, double c_ln, double pfp) {
-    return pfp * hitsPerQuery * exp(m_ln * rawScore + c_ln);
+// Continuous piecewise-loglinear E-value model.
+// E(s) = P(FP) * searchSpaceSize * 10^(c + m_low*s
+//                         + (m_high-m_low)*max(0,s-breakpoint)).
+// The denominator is fixed MinHash diversity of the complete target database.
+static double computeEvalue(double rawScore, double searchSpaceSize,
+                            double mLow_ln, double mHigh_ln,
+                            double breakpoint, double c_ln, double pfp) {
+    double exponent = mLow_ln * rawScore + c_ln;
+    if (breakpoint > 0.0 && rawScore > breakpoint) {
+        exponent += (mHigh_ln - mLow_ln) * (rawScore - breakpoint);
+    }
+    return pfp * searchSpaceSize * exp(exponent);
 }
 
 static int doTeaAlign(TeaSmithWaterman &teaSW,
                       Sequence &tSeqAA, Sequence &tSeqTea,
                       unsigned int querySeqLen, unsigned int targetSeqLen,
-                      double hitsPerQuery, double m_ln, double c_ln, double pfp,
+                      double searchSpaceSize, double mLow_ln, double mHigh_ln,
+                      double breakpoint, double c_ln, double pfp,
+                      bool calibrated,
+                      const AlignmentSeedEvidence *seedModel,
+                      const AlignmentSeedEvidence::Query &seedQuery, const char *targetTea,
                       Matcher::result_t &res, std::string &backtrace,
-                      const Parameters &par) {
+                      const LocalParameters &par) {
     float seqId = 0.0;
     backtrace.clear();
 
@@ -45,8 +60,12 @@ static int doTeaAlign(TeaSmithWaterman &teaSW,
         return -1;
     }
 
-    align.evalue = computeEvalue(align.score1, hitsPerQuery, m_ln, c_ln, pfp);
-    if (align.evalue > par.evalThr) {
+    const int rankingScore = static_cast<int>(align.score1);
+    align.evalue = (seedModel || !calibrated) ? std::numeric_limits<double>::infinity()
+        : computeEvalue(rankingScore, searchSpaceSize, mLow_ln, mHigh_ln, breakpoint, c_ln, pfp);
+    // Seed evidence is available only after traceback. Never reject using
+    // the uncorrected score or the ranking-only infinity placeholder.
+    if (calibrated && !seedModel && align.evalue > par.evalThr) {
         return -1;
     }
 
@@ -80,8 +99,17 @@ static int doTeaAlign(TeaSmithWaterman &teaSW,
         seqId = Util::computeSeqId(par.seqIdMode, align.identicalAACnt, querySeqLen, targetSeqLen, alnLength);
     }
 
-    int bitScore = static_cast<int>(align.score1);
-    align.evalue = computeEvalue(align.score1, hitsPerQuery, m_ln, c_ln, pfp);
+    int bitScore = rankingScore;
+    if (seedModel) {
+        bitScore = AlignmentSeedEvidence::score(rankingScore,
+            seedModel->evidence(seedQuery, targetTea, targetSeqLen,
+                                align.qStartPos1, align.dbStartPos1, backtrace));
+    }
+    align.evalue = !calibrated ? std::numeric_limits<double>::infinity()
+        : computeEvalue(bitScore, searchSpaceSize, mLow_ln, mHigh_ln, breakpoint, c_ln, pfp);
+    if (align.evalue > par.evalThr) {
+        return -1;
+    }
 
     res = Matcher::result_t(tSeqAA.getDbKey(), bitScore, align.qCov, align.tCov, seqId, align.evalue,
                             alnLength, align.qStartPos1, align.qEndPos1, querySeqLen,
@@ -92,6 +120,22 @@ static int doTeaAlign(TeaSmithWaterman &teaSW,
 int teaalign(int argc, const char **argv, const Command &command) {
     LocalParameters &par = LocalParameters::getLocalInstance();
     par.parseParameters(argc, argv, command, true, 0, MMseqsParameter::COMMAND_ALIGN);
+
+    const bool calibrated = par.validateCalibration();
+    const bool seedEnabled = par.seedCorrection;
+    AlignmentSeedEvidence seedModel;
+    if (seedEnabled) {
+        if (par.compBiasCorrectionScale != 0.0f) {
+            Debug(Debug::ERROR) << "Seed correction requires --comp-bias-corr-scale 0\n";
+            EXIT(EXIT_FAILURE);
+        }
+        if (par.seedModelFile == "seed_markov.txt") {
+            seedModel.loadText(std::string((const char *)seed_markov_txt, seed_markov_txt_len), par.seedPattern);
+        } else {
+            seedModel.load(par.seedModelFile, par.seedPattern);
+        }
+        Debug(Debug::INFO) << "Alignment seed correction: floor(S*(1+e)+0.5)\n";
+    }
 
     const bool touch = (par.preloadMode != Parameters::PRELOAD_MODE_MMAP);
     bool sameDB = (par.db1.compare(par.db2) == 0);
@@ -105,7 +149,8 @@ int teaalign(int argc, const char **argv, const Command &command) {
                         (touch) ? (IndexReader::PRELOAD_INDEX | IndexReader::PRELOAD_DATA) : 0);
 
     // Load AA target companion database (_aa suffix)
-    std::string tAaDbName = par.db2 + "_aa";
+    const std::string targetBase = PrefilteringIndexReader::dbPathWithoutIndex(par.db2);
+    std::string tAaDbName = targetBase + "_aa";
     DBReader<unsigned int> tAaDbr(tAaDbName.c_str(), (tAaDbName + ".index").c_str(), par.threads,
                                    DBReader<unsigned int>::USE_DATA | DBReader<unsigned int>::USE_INDEX);
     tAaDbr.open(DBReader<unsigned int>::NOSORT);
@@ -120,7 +165,7 @@ int teaalign(int argc, const char **argv, const Command &command) {
         qTeaDbr = new IndexReader(par.db1, par.threads,
                                    alignmentIsExtended ? IndexReader::SRC_SEQUENCES : IndexReader::SEQUENCES,
                                    (touch) ? (IndexReader::PRELOAD_INDEX | IndexReader::PRELOAD_DATA) : 0);
-        std::string qAaDbName = par.db1 + "_aa";
+        std::string qAaDbName = PrefilteringIndexReader::dbPathWithoutIndex(par.db1) + "_aa";
         qAaDbr = new DBReader<unsigned int>(qAaDbName.c_str(), (qAaDbName + ".index").c_str(), par.threads,
                                              DBReader<unsigned int>::USE_DATA | DBReader<unsigned int>::USE_INDEX);
         qAaDbr->open(DBReader<unsigned int>::NOSORT);
@@ -179,27 +224,39 @@ int teaalign(int argc, const char **argv, const Command &command) {
         }
     }
 
-    // Compute actual H/Q (hits per query) from prefilter results for E-value computation.
-    size_t totalPrefilterHits = 0;
-    size_t totalQueries = 0;
-    for (size_t id = 0; id < resultReader.getSize(); id++) {
-        char *data = resultReader.getData(id, 0);
-        if (*data != '\0') {
-            totalQueries++;
-            while (*data != '\0') {
-                data = Util::skipLine(data);
-                totalPrefilterHits++;
+    double searchSpaceSize = 0.0;
+    if (!calibrated) {
+        // Ranking-only custom scoring has no significance estimate.
+        searchSpaceSize = 0.;
+    } else {
+        const size_t targetCount = tTeaDbr.sequenceReader->getSize();
+        DatabaseDiversityMetadata diversity;
+        std::string diversityError;
+        if (!DatabaseDiversity::read(targetBase, diversity, diversityError)
+                || diversity.sequences != targetCount) {
+            if (diversityError.empty()) {
+                diversityError = "metadata/target sequence-count mismatch";
             }
+            Debug(Debug::ERROR)
+                << "Cannot compute diversity-adjusted E-values: "
+                << diversityError << "\n";
+            EXIT(EXIT_FAILURE);
         }
+        searchSpaceSize = diversity.effectiveTargets;
+        Debug(Debug::INFO)
+            << "E-value search space: diversity-adjusted MinHash = "
+            << searchSpaceSize << " (" << diversity.method << ")\n";
     }
-    double hitsPerQuery = (totalQueries > 0) ? static_cast<double>(totalPrefilterHits) / static_cast<double>(totalQueries) : 500.0;
-    Debug(Debug::INFO) << "H/Q (hits per query) = " << hitsPerQuery << " (" << totalPrefilterHits << " / " << totalQueries << ")\n";
 
-    // E-value parameters (configurable via --loglinear-m, --loglinear-c, --p-fp)
-    const double loglinearM_ln = par.loglinearM * 2.302585093;  // convert log10 to ln
+    // E-value parameters are supplied in log10 units and evaluated in ln.
+    const double loglinearM_ln = par.loglinearM * 2.302585093;
+    const double loglinearMHigh_ln = par.loglinearMHigh * 2.302585093;
     const double loglinearC_ln = par.loglinearC * 2.302585093;
     const double pfp = par.pFP;
-    Debug(Debug::INFO) << "E-value params: m=" << par.loglinearM << " c=" << par.loglinearC << " P(FP)=" << pfp << "\n";
+    Debug(Debug::INFO) << "E-value params: m_low=" << par.loglinearM
+                       << " m_high=" << par.loglinearMHigh
+                       << " breakpoint=" << par.loglinearBreakpoint
+                       << " c=" << par.loglinearC << " P(FP)=" << pfp << "\n";
 
 #pragma omp parallel
     {
@@ -236,14 +293,15 @@ int teaalign(int argc, const char **argv, const Command &command) {
                 qSeqAA.mapSequence(id, queryKey, querySeqAA, querySeqLen);
 
                 teaSW.ssw_init(&qSeqAA, &qSeqTea, tinySubMatAA, tinySubMatTea, &subMatAA);
+                AlignmentSeedEvidence::Query seedQuery;
+                if (seedEnabled) seedQuery = seedModel.prepare(querySeqTea, querySeqLen);
 
                 int passedNum = 0;
                 int rejected = 0;
                 while (*data != '\0' && passedNum < par.maxAccept && rejected < par.maxRejected) {
-                    char dbKeyBuffer[255 + 1];
-                    Util::parseKey(data, dbKeyBuffer);
+                    const hit_t prefilterHit = QueryMatcher::parsePrefilterHit(data);
                     data = Util::skipLine(data);
-                    const unsigned int dbKey = (unsigned int)strtoul(dbKeyBuffer, NULL, 10);
+                    const unsigned int dbKey = prefilterHit.seqId;
                     unsigned int targetId = tTeaDbr.sequenceReader->getId(dbKey);
                     const bool isIdentity = (queryId == targetId && (par.includeIdentity || sameDB));
 
@@ -261,7 +319,11 @@ int teaalign(int argc, const char **argv, const Command &command) {
 
                     Matcher::result_t res;
                     if (doTeaAlign(teaSW, tSeqAA, tSeqTea, querySeqLen, targetSeqLen,
-                                   hitsPerQuery, loglinearM_ln, loglinearC_ln, pfp,
+                                   searchSpaceSize, loglinearM_ln,
+                                   loglinearMHigh_ln, par.loglinearBreakpoint,
+                                   loglinearC_ln, pfp,
+                                   calibrated,
+                                   seedEnabled ? &seedModel : NULL, seedQuery, targetSeqTea,
                                    res, backtrace, par) == -1) {
                         rejected++;
                         continue;

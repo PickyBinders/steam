@@ -9,6 +9,7 @@
 #include "DistanceCalculator.h"
 #include "QueryMatcher.h"
 #include "FastSort.h"
+#include "DatabaseDiversity.h"
 #include <cmath>
 
 // Reuse mmseqs's parsePrecisionLib via extern (no `static` in upstream).
@@ -25,11 +26,17 @@ namespace {
 #include <omp.h>
 #endif
 
-// Log-linear E-value model following Edgar & Sahakyan (2025).
-// E(s) = P(FP) * (H/Q) * 10^(m*s + c), where s = raw alignment score.
-// Parameters configurable via --loglinear-m, --loglinear-c, --p-fp.
-static double computeEvalue(double rawScore, double hitsPerQuery, double m_ln, double c_ln, double pfp) {
-    return pfp * hitsPerQuery * exp(m_ln * rawScore + c_ln);
+// Continuous piecewise-loglinear E-values use fixed target MinHash diversity.
+// A zero breakpoint is ranking-only; candidate counts never define search space.
+static double computeEvalue(double rawScore, double searchSpaceSize,
+                            double mLow_ln, double mHigh_ln,
+                            double breakpoint, double c_ln, double pfp) {
+    if (breakpoint <= 0.0) return std::numeric_limits<double>::infinity();
+    double exponent = mLow_ln * rawScore + c_ln;
+    if (breakpoint > 0.0 && rawScore > breakpoint) {
+        exponent += (mHigh_ln - mLow_ln) * (rawScore - breakpoint);
+    }
+    return pfp * searchSpaceSize * exp(exponent);
 }
 
 template<typename T>
@@ -64,7 +71,9 @@ static Matcher::result_t ungappedAlignTea(Sequence &qSeqAA, Sequence &qSeqTea,
                                            Sequence &tSeqAA, Sequence &tSeqTea,
                                            int diagonal, SubstitutionMatrix &subMatAA,
                                            SubstitutionMatrix &subMatTea,
-                                           double hitsPerQuery, double m_ln, double c_ln, double pfp,
+                                           double searchSpaceSize, double mLow_ln,
+                                           double mHigh_ln, double breakpoint,
+                                           double c_ln, double pfp,
                                            std::string &backtrace, const Parameters &par,
                                            float &outScorePerCol) {
     DistanceCalculator::LocalAlignment res;
@@ -153,7 +162,8 @@ static Matcher::result_t ungappedAlignTea(Sequence &qSeqAA, Sequence &qSeqTea,
     float targetCov = (std::min((unsigned int)tSeqAA.L, (unsigned int)dbEndPos) - (unsigned int)dbStartPos + 1) / (float)tSeqAA.L;
     outScorePerCol = (res.diagonalLen > 0) ? ((float)res.score / (float)res.diagonalLen) : 0.0f;
 
-    double evalue = computeEvalue(res.score, hitsPerQuery, m_ln, c_ln, pfp);
+    double evalue = computeEvalue(res.score, searchSpaceSize, mLow_ln,
+                                  mHigh_ln, breakpoint, c_ln, pfp);
 
     bool hasLowerCoverage = !(Util::hasCoverage(par.covThr, par.covMode, queryCov, targetCov));
     if (hasLowerCoverage) {
@@ -186,7 +196,7 @@ int tearescorediagonal(int argc, const char **argv, const Command &command) {
                         touch ? IndexReader::PRELOAD_INDEX : 0);
 
     // Load query AA database (_aa suffix)
-    std::string qAaDbName = par.db1 + "_aa";
+    std::string qAaDbName = PrefilteringIndexReader::dbPathWithoutIndex(par.db1) + "_aa";
     DBReader<unsigned int> qAaDbr(qAaDbName.c_str(), (qAaDbName + ".index").c_str(), par.threads,
                                    DBReader<unsigned int>::USE_DATA | DBReader<unsigned int>::USE_INDEX);
     qAaDbr.open(DBReader<unsigned int>::NOSORT);
@@ -200,7 +210,7 @@ int tearescorediagonal(int argc, const char **argv, const Command &command) {
     } else {
         tTeaDbr = new IndexReader(par.db2, par.threads, IndexReader::SEQUENCES,
                                    touch ? IndexReader::PRELOAD_INDEX : 0);
-        std::string tAaDbName = par.db2 + "_aa";
+        std::string tAaDbName = PrefilteringIndexReader::dbPathWithoutIndex(par.db2) + "_aa";
         tAaDbr = new DBReader<unsigned int>(tAaDbName.c_str(), (tAaDbName + ".index").c_str(), par.threads,
                                              DBReader<unsigned int>::USE_DATA | DBReader<unsigned int>::USE_INDEX);
         tAaDbr->open(DBReader<unsigned int>::NOSORT);
@@ -240,10 +250,30 @@ int tearescorediagonal(int argc, const char **argv, const Command &command) {
 
     Debug::Progress progress(resultReader.getSize());
 
-    double hitsPerQuery = static_cast<double>(par.maxResListLen);
+    double searchSpaceSize = 0.0;
+    if (par.loglinearBreakpoint > 0.0) {
+        const size_t targetCount = tTeaDbr->sequenceReader->getSize();
+        DatabaseDiversityMetadata diversity;
+        std::string diversityError;
+        if (!DatabaseDiversity::read(par.db2, diversity, diversityError)
+                || diversity.sequences != targetCount) {
+            if (diversityError.empty()) {
+                diversityError = "metadata/target sequence-count mismatch";
+            }
+            Debug(Debug::ERROR)
+                << "Cannot compute diversity-adjusted E-values: "
+                << diversityError << "\n";
+            EXIT(EXIT_FAILURE);
+        }
+        searchSpaceSize = diversity.effectiveTargets;
+        Debug(Debug::INFO)
+            << "E-value search-space scale = " << searchSpaceSize
+            << " (diversity-adjusted MinHash; " << diversity.method << ")\n";
+    }
 
-    // E-value parameters (configurable via --loglinear-m, --loglinear-c, --p-fp)
+    // E-value parameters are supplied in log10 units and evaluated in ln.
     const double loglinearM_ln = par.loglinearM * 2.302585093;
+    const double loglinearMHigh_ln = par.loglinearMHigh * 2.302585093;
     const double loglinearC_ln = par.loglinearC * 2.302585093;
     const double pfp = par.pFP;
 
@@ -318,8 +348,10 @@ int tearescorediagonal(int argc, const char **argv, const Command &command) {
                     Matcher::result_t res = ungappedAlignTea(qSeqAA, qSeqTea,
                                                               tSeqAA, tSeqTea,
                                                               static_cast<short>(prefHit.diagonal),
-                                                              subMatAA, subMatTea, hitsPerQuery,
-                                                              loglinearM_ln, loglinearC_ln, pfp,
+                                                              subMatAA, subMatTea, searchSpaceSize,
+                                                              loglinearM_ln, loglinearMHigh_ln,
+                                                              par.loglinearBreakpoint,
+                                                              loglinearC_ln, pfp,
                                                               backtrace, par, currScorePerCol);
 
                     if (res.dbKey == UINT_MAX) {

@@ -5,6 +5,7 @@
 
 // steam-native commands
 extern int createteadb(int argc, const char **argv, const Command& command);
+extern int computediversity(int argc, const char **argv, const Command& command);
 extern int createteasubdb(int argc, const char **argv, const Command& command);
 extern int teaalign(int argc, const char **argv, const Command& command);
 extern int tearescorediagonal(int argc, const char **argv, const Command& command);

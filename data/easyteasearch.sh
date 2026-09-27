@@ -49,6 +49,7 @@ if [ -n "${REMOVE_TMP}" ]; then
         "$MMSEQS" rmdb "${TMP_PATH}/target_h" ${VERBOSITY}
         # shellcheck disable=SC2086
         "$MMSEQS" rmdb "${TMP_PATH}/target_aa" ${VERBOSITY}
+        rm -f -- "${TMP_PATH}/target.steam-diversity"
     fi
     if [ -f "${TMP_PATH}/query.dbtype" ]; then
         # shellcheck disable=SC2086
@@ -57,6 +58,7 @@ if [ -n "${REMOVE_TMP}" ]; then
         "$MMSEQS" rmdb "${TMP_PATH}/query_h" ${VERBOSITY}
         # shellcheck disable=SC2086
         "$MMSEQS" rmdb "${TMP_PATH}/query_aa" ${VERBOSITY}
+        rm -f -- "${TMP_PATH}/query.steam-diversity"
     fi
     rm -rf "${TMP_PATH}/search_tmp"
     rm -f "${TMP_PATH}/easyteasearch.sh"

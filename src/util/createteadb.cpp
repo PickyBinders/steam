@@ -5,6 +5,7 @@
 #include "Util.h"
 #include "KSeqWrapper.h"
 #include "LocalParameters.h"
+#include "DatabaseDiversity.h"
 
 #include <string>
 
@@ -126,6 +127,31 @@ int createteadb(int argc, const char **argv, const Command &command) {
     hdrWriter.close(true);
     aaWriter.close(true);
     teaWriter.close(true);
+
+    // Compute a fixed, search-parameter-independent database diversity summary
+    // automatically at creation time.  The native DB is already in the page
+    // cache, and the C++ implementation scans it in parallel without any
+    // clustering or retained per-sequence sketches.
+    DatabaseDiversityMetadata diversity;
+    std::string diversityError;
+    bool diversityOk = DatabaseDiversity::compute(
+        outDB, par.threads, diversity, diversityError
+    );
+    if (diversityOk && diversity.sequences != written) {
+        diversityError = "metadata/database sequence-count mismatch";
+        diversityOk = false;
+    }
+    if (diversityOk) {
+        diversityOk = DatabaseDiversity::write(outDB, diversity, diversityError);
+    }
+    if (!diversityOk) {
+        Debug(Debug::ERROR) << "Database diversity failed: " << diversityError << "\n";
+        EXIT(EXIT_FAILURE);
+    }
+    Debug(Debug::INFO)
+        << "Database diversity: method=" << diversity.method
+        << " effective_targets=" << diversity.effectiveTargets
+        << " metadata=" << DatabaseDiversity::metadataPath(outDB) << "\n";
 
     // Both alphabets share IDs; expose the same headers/lookup so native
     // sequence utilities can also read the companion AA database directly.

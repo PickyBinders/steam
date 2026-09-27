@@ -17,6 +17,12 @@ if [ -e "${IN}_aa.dbtype" ]; then
         || fail "createsubdb on _aa died"
 fi
 
+if [ -e "${OUT}.dbtype" ] && [ -e "${OUT}_aa.dbtype" ]; then
+    # shellcheck disable=SC2086
+    "$MMSEQS" computediversity "${OUT}" ${DIVERSITY_PAR} \
+        || fail "database diversity computation died"
+fi
+
 if [ -e "${OUT}.sh" ]; then
     rm -f -- "${OUT}.sh"
     rm -f -- "${OUT}.indextmp"
