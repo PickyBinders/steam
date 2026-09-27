@@ -13,7 +13,7 @@ struct DatabaseDiversityMetadata {
     double effectiveTargets;
     double coordinateStandardDeviation;
     size_t coordinates;
-    unsigned int hllPrecision;
+    size_t sketchCapacity;
 };
 
 class DatabaseDiversity {
@@ -21,7 +21,7 @@ public:
     static const char *method();
     static const char *suffix();
 
-    // Compute the fixed AA3+TEA5 MinHash/HLL statistic from a paired native
+    // Compute the fixed AA3+TEA5 MinHash statistic from a paired native
     // STEAM database.  This is a linear, parallel scan and does no clustering.
     static bool compute(const std::string &database, int threads,
                         DatabaseDiversityMetadata &metadata,

@@ -105,11 +105,11 @@ int teasearch(int argc, const char **argv, const Command &command) {
     cmd.addVariable("VERBOSITY", par.createParameterString(par.onlyverbosity).c_str());
 
     // Override --sub-mat with --matcha for prefiltering (TEA k-mer matching)
-    // Use lower comp bias scale for prefilter (matching foldseek)
+    // Exact seeds and combined AA+TEA diagonal scoring need no profile bias.
     auto origScoringMatrixFile = par.scoringMatrixFile;
     const float alignmentCompBiasCorrectionScale = par.compBiasCorrectionScale;
     par.scoringMatrixFile = MultiParam<NuclAA<std::string>>(NuclAA<std::string>(par.teaMatrixFile, par.teaMatrixFile));
-    par.compBiasCorrectionScale = 0.15;
+    par.compBiasCorrectionScale = 0.0;
     cmd.addVariable("PREFILTER_PAR", par.createParameterString(par.teaprefilter).c_str());
     cmd.addVariable("STEAM_SPLIT_INVARIANT", "1");
     cmd.addVariable("STEAM_UNGAPPED_AA", combinedUngapped ? "1" : NULL);

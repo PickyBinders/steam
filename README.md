@@ -94,7 +94,7 @@ Useful flags:
 | `easy-cluster` | Cluster paired TEA/AA FASTAs (cascaded, sensitive) |
 | `easy-linclust` | Cluster paired TEA/AA FASTAs (linear-time, faster) |
 | `createdb` | Create a STEAM database from paired TEA/AA FASTA files |
-| `computediversity` | Compute or refresh fixed MinHash/HLL metadata for an existing paired database |
+| `computediversity` | Compute or refresh fixed MinHash metadata for an existing paired database |
 | `search` | Search pre-built databases (faster for repeated searches) |
 | `prefilter` | Generate native candidate rows directly |
 | `cluster` | Cluster a pre-built database (cascaded) |
@@ -168,13 +168,15 @@ E(s) = D_target * 10^(c + m_low*s + (m_high-m_low)*max(0, s-b))
 ```
 
 where `s` is the final corrected score, `D_target` is the complete target
-database's AA3+TEA5 MinHash/HLL effective target count, and `b` is the fitted
-score breakpoint. The selected coefficients are:
+database's AA3+TEA5 MinHash effective target count, and `b` is the fitted
+score breakpoint.
+
+The selected coefficients are:
 
 ```text
 m_low = -0.005628286904365784
 m_high = -0.0013916072449292318
-c = 0.24635087159892025
+c = 0.24858538629087792
 b = 578
 ```
 

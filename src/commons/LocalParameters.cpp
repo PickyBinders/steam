@@ -71,7 +71,7 @@ LocalParameters::LocalParameters() :
     loglinearM = -0.005628286904365784;
     loglinearMHigh = -0.0013916072449292318;
     loglinearBreakpoint = 578.0;
-    loglinearC = 0.24635087159892025;
+    loglinearC = 0.24858538629087792;
     pFP = 1.0;
     ungappedTeaAa = true;
     seedCorrection = true;

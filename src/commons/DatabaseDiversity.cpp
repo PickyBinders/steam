@@ -12,8 +12,10 @@
 #include <cstring>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <limits>
-#include <map>
+#include <set>
+#include <sstream>
 #include <vector>
 
 #ifdef _OPENMP
@@ -25,10 +27,9 @@
 namespace {
 
 const size_t SKETCHES = 64;
-const unsigned int HLL_P = 14;
-const size_t HLL_REGISTERS = size_t(1) << HLL_P;
+const size_t SKETCH_CAPACITY = 1024;
 const uint64_t EMPTY_HASH = std::numeric_limits<uint64_t>::max();
-const char *METHOD = "aa3-tea5-doph64-hll14-v1";
+const char *METHOD = "aa3-tea5-doph64-kmv1024-v1";
 const char *SUFFIX = ".steam-diversity";
 
 uint64_t splitmix64(uint64_t value) {
@@ -38,8 +39,12 @@ uint64_t splitmix64(uint64_t value) {
     return value ^ (value >> 31);
 }
 
+char uppercase(char value) {
+    return value >= 'a' && value <= 'z' ? value - 32 : value;
+}
+
 int symbol(char value) {
-    if (value >= 'a' && value <= 'z') value -= 32;
+    value = uppercase(value);
     switch (value) {
         case 'A': return 0; case 'C': return 1; case 'D': return 2;
         case 'E': return 3; case 'F': return 4; case 'G': return 5;
@@ -98,8 +103,8 @@ std::array<uint64_t, SKETCHES> buildSignature(const char *tea, const char *aa,
         uint64_t fallback = 0xC700000000000000ULL;
         for (size_t i = 0; i < length; ++i) {
             fallback = splitmix64(
-                fallback ^ static_cast<uint8_t>(tea[i])
-                ^ (uint64_t(static_cast<uint8_t>(aa[i])) << 8)
+                fallback ^ static_cast<uint8_t>(uppercase(tea[i]))
+                ^ (uint64_t(static_cast<uint8_t>(uppercase(aa[i]))) << 8)
             );
         }
         signature.fill(fallback);
@@ -122,63 +127,44 @@ std::array<uint64_t, SKETCHES> buildSignature(const char *tea, const char *aa,
     return signature;
 }
 
-unsigned int hllRank(uint64_t value) {
-    const uint64_t remainder = value >> HLL_P;
-    if (remainder == 0) return 64 - HLL_P + 1;
-    return static_cast<unsigned int>(__builtin_clzll(remainder)) - HLL_P + 1;
+void retainMinimum(std::set<uint64_t> &sketch, uint64_t hash) {
+    if (sketch.size() < SKETCH_CAPACITY || hash < *sketch.rbegin()) {
+        sketch.insert(hash);
+        if (sketch.size() > SKETCH_CAPACITY) sketch.erase(std::prev(sketch.end()));
+    }
 }
 
-void addSignature(uint8_t *registers,
+void addSignature(std::set<uint64_t> *sketches,
                   const std::array<uint64_t, SKETCHES> &signature) {
     for (size_t coordinate = 0; coordinate < SKETCHES; ++coordinate) {
         const uint64_t hashed = splitmix64(
             signature[coordinate]
             ^ (coordinate * 0x94D049BB133111EBULL)
         );
-        const size_t index = hashed & (HLL_REGISTERS - 1);
-        const uint8_t rank = static_cast<uint8_t>(hllRank(hashed));
-        uint8_t &slot = registers[coordinate * HLL_REGISTERS + index];
-        slot = std::max(slot, rank);
+        retainMinimum(sketches[coordinate], hashed);
     }
 }
 
-double hllEstimate(const uint8_t *registers) {
-    const double m = static_cast<double>(HLL_REGISTERS);
-    double inverse = 0.0;
-    size_t zeros = 0;
-    for (size_t i = 0; i < HLL_REGISTERS; ++i) {
-        inverse += std::ldexp(1.0, -static_cast<int>(registers[i]));
-        zeros += registers[i] == 0;
-    }
-    const double alpha = 0.7213 / (1.0 + 1.079 / m);
-    double estimate = alpha * m * m / inverse;
-    if (estimate <= 2.5 * m && zeros > 0) {
-        estimate = m * std::log(m / static_cast<double>(zeros));
-    }
-    return estimate;
+template<typename T>
+bool readField(std::istream &input, const char *name, T &value) {
+    std::string line;
+    const std::string prefix = std::string(name) + '\t';
+    if (!std::getline(input, line) || line.compare(0, prefix.size(), prefix) != 0)
+        return false;
+    const std::string text = line.substr(prefix.size());
+    if (text.empty() || text[0] == '-' || text[0] == ' ' || text[0] == '\t') return false;
+    std::istringstream field(text);
+    std::string extra;
+    return (field >> value) && !(field >> extra);
 }
 
-bool parseUnsigned(const std::map<std::string, std::string> &values,
-                   const std::string &key, uint64_t &value) {
-    const std::map<std::string, std::string>::const_iterator found = values.find(key);
-    if (found == values.end()) return false;
-    char *end = NULL;
-    errno = 0;
-    const unsigned long long parsed = std::strtoull(found->second.c_str(), &end, 10);
-    if (errno != 0 || end == found->second.c_str() || *end != '\0') return false;
-    value = static_cast<uint64_t>(parsed);
-    return true;
-}
-
-bool parseDouble(const std::map<std::string, std::string> &values,
-                 const std::string &key, double &value) {
-    const std::map<std::string, std::string>::const_iterator found = values.find(key);
-    if (found == values.end()) return false;
-    char *end = NULL;
-    errno = 0;
-    value = std::strtod(found->second.c_str(), &end);
-    return errno == 0 && end != found->second.c_str() && *end == '\0'
-        && std::isfinite(value);
+bool validMetadata(const DatabaseDiversityMetadata &metadata) {
+    return metadata.schemaVersion == 2 && metadata.method == METHOD
+        && metadata.sequences > 0 && std::isfinite(metadata.effectiveTargets)
+        && metadata.effectiveTargets > 0.0
+        && std::isfinite(metadata.coordinateStandardDeviation)
+        && metadata.coordinateStandardDeviation >= 0.0
+        && metadata.coordinates == SKETCHES && metadata.sketchCapacity == SKETCH_CAPACITY;
 }
 
 bool hasSuffix(const std::string &value, const std::string &suffix) {
@@ -248,10 +234,7 @@ bool DatabaseDiversity::compute(
 #ifndef _OPENMP
     workerCount = 1;
 #endif
-    const size_t registersPerThread = SKETCHES * HLL_REGISTERS;
-    std::vector<uint8_t> threadRegisters(
-        static_cast<size_t>(workerCount) * registersPerThread, 0
-    );
+    std::vector<std::set<uint64_t>> threadSketches(workerCount * SKETCHES);
     uint64_t residues = 0;
 
 #pragma omp parallel num_threads(workerCount) reduction(+:residues)
@@ -261,8 +244,7 @@ bool DatabaseDiversity::compute(
 #else
         const int thread = 0;
 #endif
-        uint8_t *local = threadRegisters.data()
-            + static_cast<size_t>(thread) * registersPerThread;
+        std::set<uint64_t> *local = threadSketches.data() + thread * SKETCHES;
 #pragma omp for schedule(dynamic, 256)
         for (size_t id = 0; id < tea.getSize(); ++id) {
             const size_t length = tea.getSeqLen(id);
@@ -273,25 +255,22 @@ bool DatabaseDiversity::compute(
         }
     }
 
-    std::vector<uint8_t> merged(registersPerThread, 0);
+    std::array<double, SKETCHES> estimates;
 #pragma omp parallel for num_threads(workerCount) schedule(static)
-    for (size_t index = 0; index < registersPerThread; ++index) {
-        uint8_t value = 0;
+    for (size_t coordinate = 0; coordinate < SKETCHES; ++coordinate) {
+        std::set<uint64_t> merged;
         for (int thread = 0; thread < workerCount; ++thread) {
-            value = std::max(
-                value,
-                threadRegisters[static_cast<size_t>(thread) * registersPerThread + index]
-            );
+            for (uint64_t hash : threadSketches[thread * SKETCHES + coordinate])
+                retainMinimum(merged, hash);
         }
-        merged[index] = value;
+        // Exact while unsaturated; otherwise the unbiased bottom-k estimator.
+        estimates[coordinate] = merged.size() < SKETCH_CAPACITY ? double(merged.size())
+            : double((SKETCH_CAPACITY - 1) * 18446744073709551616.0L
+                     / (static_cast<long double>(*merged.rbegin()) + 1));
     }
 
-    std::array<double, SKETCHES> estimates;
     double mean = 0.0;
     for (size_t coordinate = 0; coordinate < SKETCHES; ++coordinate) {
-        estimates[coordinate] = hllEstimate(
-            merged.data() + coordinate * HLL_REGISTERS
-        );
         mean += estimates[coordinate] / SKETCHES;
     }
     double variance = 0.0;
@@ -303,8 +282,8 @@ bool DatabaseDiversity::compute(
     tea.close();
     aa.close();
     metadata = {
-        1, METHOD, sequences, residues, mean,
-        std::sqrt(variance), SKETCHES, HLL_P
+        2, METHOD, sequences, residues, mean,
+        std::sqrt(variance), SKETCHES, SKETCH_CAPACITY
     };
     error.clear();
     return true;
@@ -313,14 +292,7 @@ bool DatabaseDiversity::compute(
 bool DatabaseDiversity::write(
         const std::string &database,
         const DatabaseDiversityMetadata &metadata, std::string &error) {
-    if (metadata.schemaVersion != 1 || metadata.method != METHOD
-            || metadata.sequences == 0
-            || !std::isfinite(metadata.effectiveTargets)
-            || metadata.effectiveTargets <= 0.0
-            || !std::isfinite(metadata.coordinateStandardDeviation)
-            || metadata.coordinateStandardDeviation < 0.0
-            || metadata.coordinates != SKETCHES
-            || metadata.hllPrecision != HLL_P) {
+    if (!validMetadata(metadata)) {
         error = "Refusing to write invalid diversity metadata";
         return false;
     }
@@ -340,7 +312,7 @@ bool DatabaseDiversity::write(
                << "effective_targets\t" << metadata.effectiveTargets << "\n"
                << "coordinate_sd\t" << metadata.coordinateStandardDeviation << "\n"
                << "coordinates\t" << metadata.coordinates << "\n"
-               << "hll_precision\t" << metadata.hllPrecision << "\n";
+               << "sketch_capacity\t" << metadata.sketchCapacity << "\n";
         output.close();
         if (!output) {
             std::remove(temporary.c_str());
@@ -368,52 +340,17 @@ bool DatabaseDiversity::read(const std::string &database,
             + "` or rebuild the database with `steam createdb`";
         return false;
     }
-    std::map<std::string, std::string> values;
-    std::string line;
-    while (std::getline(input, line)) {
-        const size_t tab = line.find('\t');
-        if (tab == std::string::npos || tab == 0 || tab + 1 >= line.size()
-                || !values.emplace(line.substr(0, tab), line.substr(tab + 1)).second) {
-            error = "Malformed diversity metadata: " + path;
-            return false;
-        }
-    }
-    if (!input.eof() || values.size() != 8) {
-        error = "Incomplete diversity metadata: " + path;
-        return false;
-    }
-    uint64_t version = 0, sequences = 0, residues = 0, coordinates = 0, precision = 0;
-    double effectiveTargets = 0.0, coordinateSd = 0.0;
-    if (!parseUnsigned(values, "steam_database_diversity", version)
-            || !parseUnsigned(values, "sequences", sequences)
-            || !parseUnsigned(values, "residues", residues)
-            || !parseUnsigned(values, "coordinates", coordinates)
-            || !parseUnsigned(values, "hll_precision", precision)
-            || !parseDouble(values, "effective_targets", effectiveTargets)
-            || !parseDouble(values, "coordinate_sd", coordinateSd)) {
-        error = "Invalid diversity metadata number: " + path;
-        return false;
-    }
-    const std::map<std::string, std::string>::const_iterator methodValue = values.find("method");
-    if (version != 1 || methodValue == values.end() || methodValue->second != METHOD) {
-        error = "Unsupported diversity metadata method/version: " + path;
-        return false;
-    }
-    metadata = {
-        1,
-        methodValue->second,
-        sequences,
-        residues,
-        effectiveTargets,
-        coordinateSd,
-        static_cast<size_t>(coordinates),
-        static_cast<unsigned int>(precision),
-    };
-    if (metadata.sequences == 0
-            || metadata.effectiveTargets <= 0.0
-            || metadata.coordinateStandardDeviation < 0.0
-            || coordinates != SKETCHES || precision != HLL_P) {
-        error = "Invalid diversity metadata values: " + path;
+    if (!readField(input, "steam_database_diversity", metadata.schemaVersion)
+            || !readField(input, "method", metadata.method)
+            || !readField(input, "sequences", metadata.sequences)
+            || !readField(input, "residues", metadata.residues)
+            || !readField(input, "effective_targets", metadata.effectiveTargets)
+            || !readField(input, "coordinate_sd", metadata.coordinateStandardDeviation)
+            || !readField(input, "coordinates", metadata.coordinates)
+            || !readField(input, "sketch_capacity", metadata.sketchCapacity)
+            || input.peek() != std::char_traits<char>::eof() || !validMetadata(metadata)) {
+        error = "Invalid or incompatible diversity metadata: " + path
+            + "; run `steam computediversity " + database + "`";
         return false;
     }
     error.clear();

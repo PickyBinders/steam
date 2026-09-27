@@ -53,7 +53,7 @@ std::vector<Command> steamCommands = {
                                    {"steamDB", DbType::ACCESS_MODE_OUTPUT, DbType::NEED_DATA, &DbValidator::flatfile }}},
         {"computediversity", computediversity, &localPar.computediversity,
                 COMMAND_DATABASE_CREATION,
-                "Compute fixed MinHash/HLL diversity metadata for a paired STEAM database",
+                "Compute fixed MinHash diversity metadata for a paired STEAM database",
                 "steam computediversity targetDB\n",
                 STEAM_AUTHOR,
                 "<i:sequenceDB>",

@@ -11,7 +11,7 @@ mkdir -p "${test_dir}"
     "${fixture_dir}/target_tea.fasta" "${fixture_dir}/target_aa.fasta" \
     "${test_dir}/target" --threads 2 -v 1
 test -s "${test_dir}/target.steam-diversity"
-grep -q $'^method\taa3-tea5-doph64-hll14-v1$' \
+grep -q $'^method\taa3-tea5-doph64-kmv1024-v1$' \
     "${test_dir}/target.steam-diversity"
 grep -q $'^sequences\t2$' "${test_dir}/target.steam-diversity"
 
@@ -81,5 +81,20 @@ if run_case missing_metadata "${test_dir}/duplicate" \
 fi
 grep -q 'Cannot compute diversity-adjusted E-values' \
     "${test_dir}/missing_metadata.log"
+
+# Reject incompatible dimensions and invalid numbers instead of changing N_eff.
+for invalid in effective_targets:-1 effective_targets:nan coordinates:65 sketch_capacity:2048 steam_database_diversity:1; do
+    field="${invalid%%:*}"
+    value="${invalid#*:}"
+    awk -F '\t' -v field="${field}" -v value="${value}" \
+        '$1 == field {print field "\t" value; next} {print}' \
+        "${test_dir}/target.expected" > "${test_dir}/target.steam-diversity"
+    if run_case invalid_metadata "${test_dir}/target" \
+            >"${test_dir}/invalid_metadata.log" 2>&1; then
+        echo "Search accepted invalid diversity field ${field}" >&2
+        exit 1
+    fi
+done
+cp "${test_dir}/target.expected" "${test_dir}/target.steam-diversity"
 
 printf 'MinHash database-diversity E-value tests passed\n'
