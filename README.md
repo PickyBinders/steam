@@ -94,7 +94,9 @@ Useful flags:
 | `easy-cluster` | Cluster paired TEA/AA FASTAs (cascaded, sensitive) |
 | `easy-linclust` | Cluster paired TEA/AA FASTAs (linear-time, faster) |
 | `createdb` | Create a STEAM database from paired TEA/AA FASTA files |
+| `computediversity` | Compute or refresh fixed MinHash/HLL metadata for an existing paired database |
 | `search` | Search pre-built databases (faster for repeated searches) |
+| `prefilter` | Generate native candidate rows directly |
 | `cluster` | Cluster a pre-built database (cascaded) |
 | `linclust` | Cluster a pre-built database (linear-time) |
 | `convertalis` | Convert alignment results to various output formats |
@@ -141,7 +143,7 @@ Standard MMseqs2 output columns (`fident`, `alnlen`, `qcov`, `tcov`, `evalue`, `
 The alignment score at each position is the sum of:
 
 - **MATCHA score**: substitution score from the TEA alphabet matrix, scaled by `--tea-scale` (default 1; use 2 for half-bit matrices)
-- **AA score**: BLOSUM62 substitution score, weighted by `--aa-weight` (default 1.4)
+- **AA score**: BLOSUM62 substitution score, weighted by `--aa-weight` (default 3)
 
 By default, prefilter candidates are ranked using the combined MATCHA +
 weighted AA ungapped diagonal score before the `--max-seqs` cutoff. Pass
@@ -154,19 +156,35 @@ For an exported TEA matrix, verify the native loaded integers before searching:
 cmake --build build --target steam_dump_matrix
 build/src/steam_dump_matrix tea.out 2
 ```
-
-The diagnostic uses the same MMseqs matrix loader as alignment and emits all
-state-pair scores. Compare the 20-state entries against the exported integer
-matrix. The required X row does not authorize unknown TEA states in inputs.
-`--tea-scale` applies to gapped and explicit diagonal rescoring; native prefilter
-score scaling remains a separate heuristic.
+After alignment traceback, the score becomes $floor(S*(1+e)+0.5)$, where `e` is the mean Markov rarity weight of distinct query TEA words supported by gap-free seven-column seed spans.
 
 ## E-value computation
 
-STEAM uses a log-linear E-value model following [Edgar & Sahakyan (2025)](https://doi.org/10.1101/2025.07.17.665375). E-values are computed as:
+STEAM uses a continuous piecewise-loglinear E-value model fitted to the
+empirical false-positive score tail. E-values are computed as:
 
 ```
-E(s) = (H/Q) * 10^(m*s + c)
+E(s) = D_target * 10^(c + m_low*s + (m_high-m_low)*max(0, s-b))
 ```
 
-where `s` is the raw alignment score, `H/Q` is the average number of reported hits per query (computed at runtime from prefilter results), and `m` and `c` are parameters fitted on SCOP40c.
+where `s` is the final corrected score, `D_target` is the complete target
+database's AA3+TEA5 MinHash/HLL effective target count, and `b` is the fitted
+score breakpoint. The selected coefficients are:
+
+```text
+m_low = -0.005628286904365784
+m_high = -0.0013916072449292318
+c = 0.24635087159892025
+b = 578
+```
+
+### Legacy TEA
+
+Pass the legacy matrix and gap, and disable the seed correction. For example:
+
+```bash
+steam easy-search query_tea.fasta query_aa.fasta targetDB result.m8 tmp \\
+  --matcha legacy_matrix.out --seed-correction 0 \\
+  --tea-scale 1 --aa-weight 1.4 --gap-open 14 --gap-extend 2 \\
+  --comp-bias-corr 0 --ungapped-tea-aa 0 -e inf
+```
