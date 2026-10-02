@@ -8,12 +8,25 @@
 #include "DatabaseDiversity.h"
 
 #include <string>
+#include <cstdlib>
 
-// Strip tea_convert entropy suffix ("|H=0.123") from header name
-static std::string stripEntropySuffix(const char *name, size_t len) {
+// Strip only reserved trailing numeric TEA fields; source accessions may
+// themselves contain pipes. AA headers need not carry TEA confidence.
+static std::string stripConfidenceSuffix(const char *name, size_t len) {
     std::string s(name, len);
-    size_t pos = s.find("|H=");
-    if (pos != std::string::npos) {
+    while (true) {
+        size_t pos = s.rfind('|');
+        if (pos == std::string::npos) break;
+        std::string field = s.substr(pos + 1);
+        size_t offset = field.compare(0, 4, "TLS=") == 0 ? 4 :
+                        field.compare(0, 4, "TCP=") == 0 ? 4 :
+                        field.compare(0, 6, "TSFMP=") == 0 ? 6 :
+                        field.compare(0, 2, "H=") == 0 ? 2 : 0;
+        if (offset == 0) break;
+        const char *value = field.c_str() + offset;
+        char *end = NULL;
+        std::strtod(value, &end);
+        if (end == value || *end != '\0') break;
         s.erase(pos);
     }
     return s;
@@ -66,7 +79,7 @@ int createteadb(int argc, const char **argv, const Command &command) {
         const KSeqWrapper::KSeqEntry &teaEntry = teaReader->entry;
         const KSeqWrapper::KSeqEntry &aaEntry = aaReader->entry;
 
-        std::string teaName = stripEntropySuffix(teaEntry.name.s, teaEntry.name.l);
+        std::string teaName = stripConfidenceSuffix(teaEntry.name.s, teaEntry.name.l);
         std::string aaName(aaEntry.name.s, aaEntry.name.l);
 
         if (teaName != aaName) {
@@ -95,8 +108,8 @@ int createteadb(int argc, const char **argv, const Command &command) {
         aaSeq.push_back('\n');
         aaWriter.writeData(aaSeq.c_str(), aaSeq.length(), id, 0);
 
-        // Write header (use stripped TEA name)
-        std::string header = teaName;
+        // Preserve confidence metadata, but pair and index by clean accession.
+        std::string header(teaEntry.name.s, teaEntry.name.l);
         if (teaEntry.comment.l > 0) {
             header.append(" ");
             header.append(teaEntry.comment.s, teaEntry.comment.l);
@@ -105,7 +118,7 @@ int createteadb(int argc, const char **argv, const Command &command) {
         hdrWriter.writeData(header.c_str(), header.length(), id, 0);
 
         // Write lookup entry
-        std::string accession = Util::parseFastaHeader(header.c_str());
+        std::string accession = Util::parseFastaHeader(teaName.c_str());
         fprintf(lookupFp, "%u\t%s\t0\n", id, accession.c_str());
 
         id++;
