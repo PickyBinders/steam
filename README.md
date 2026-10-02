@@ -19,7 +19,7 @@ See [the preprint](https://doi.org/10.1101/2025.11.27.690975) to learn more.
 mamba install -c conda-forge cmake gxx_linux-64
 
 # Build
-git clone --recursive https://github.com/PickyBinders/steam.git
+git clone --branch dev --recursive https://github.com/PickyBinders/steam.git
 cd steam
 mkdir build && cd build
 cmake -DCMAKE_BUILD_TYPE=Release ..
@@ -54,7 +54,6 @@ Useful flags:
 |-----------|---------|-------------|
 | `-e` | 100 | E-value threshold |
 | `--max-seqs` | 2000 | Maximum results per query from prefiltering |
-| `--ungapped-tea-aa` | 1 | Rank double-hit candidates by combined TEA+AA ungapped score before `--max-seqs` |
 | `--min-seq-id` | 0 | Minimum **amino acid** sequence identity |
 
 ### 3. Cluster
