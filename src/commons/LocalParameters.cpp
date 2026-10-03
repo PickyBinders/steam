@@ -86,7 +86,7 @@ LocalParameters::LocalParameters() :
     gapOpen = MultiParam<NuclAA<int>>(NuclAA<int>(24, 5));
     gapExtend = MultiParam<NuclAA<int>>(NuclAA<int>(2, 2));
     maxResListLen = 2000;
-    evalThr = 100.0;
+    evalThr = 0.01;
     kmerSize = 5;
     spacedKmer = 1;
     spacedKmerPattern = "1101101";

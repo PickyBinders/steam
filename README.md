@@ -52,7 +52,7 @@ Useful flags:
 
 | Flag | Default | Notes |
 |-----------|---------|-------------|
-| `-e` | 100 | E-value threshold |
+| `-e` | 0.01 | E-value threshold |
 | `--max-seqs` | 2000 | Maximum results per query from prefiltering |
 | `--min-seq-id` | 0 | Minimum **amino acid** sequence identity |
 
