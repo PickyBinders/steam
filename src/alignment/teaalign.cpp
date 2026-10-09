@@ -299,9 +299,12 @@ int teaalign(int argc, const char **argv, const Command &command) {
                 int passedNum = 0;
                 int rejected = 0;
                 while (*data != '\0' && passedNum < par.maxAccept && rejected < par.maxRejected) {
-                    const hit_t prefilterHit = QueryMatcher::parsePrefilterHit(data);
+                    // Linclust's ungapped stage passes alignment rows here;
+                    // ordinary search passes three-column prefilter rows.
+                    // Both formats start with the target database key.
+                    Util::parseKey(data, buffer);
+                    const unsigned int dbKey = static_cast<unsigned int>(strtoul(buffer, NULL, 10));
                     data = Util::skipLine(data);
-                    const unsigned int dbKey = prefilterHit.seqId;
                     unsigned int targetId = tTeaDbr.sequenceReader->getId(dbKey);
                     const bool isIdentity = (queryId == targetId && (par.includeIdentity || sameDB));
 
