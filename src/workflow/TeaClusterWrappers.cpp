@@ -12,6 +12,8 @@
 
 #include <cassert>
 #include <cstdlib>
+#include <cstring>
+#include <vector>
 
 #include "Command.h"
 #include "FileUtil.h"
@@ -31,6 +33,25 @@ static void setupTeaEnv() {
 
 int teacluster(int argc, const char **argv, const Command &command) {
     setupTeaEnv();
+    bool positiveTeaCutoff = false;
+    bool explicitClusteringMode = false;
+    for (int i = 0; i < argc; ++i) {
+        if (strcmp(argv[i], "--min-tfident") == 0 && i + 1 < argc) {
+            positiveTeaCutoff = strtod(argv[i + 1], NULL) > 0.0;
+        }
+        if (strcmp(argv[i], "--single-step-clustering") == 0) {
+            explicitClusteringMode = true;
+        }
+    }
+    if (positiveTeaCutoff && !explicitClusteringMode) {
+        // Cascaded clustering can merge through an intermediate representative
+        // that passes the cutoff even when the final member pair does not.
+        std::vector<const char *> arguments(argv, argv + argc);
+        arguments.push_back("--single-step-clustering");
+        arguments.push_back("1");
+        Debug(Debug::INFO) << "Using single-step clustering to enforce --min-tfident\n";
+        return clusteringworkflow(static_cast<int>(arguments.size()), arguments.data(), command);
+    }
     return clusteringworkflow(argc, argv, command);
 }
 
@@ -44,6 +65,12 @@ static int runEasyTeaCluster(int argc, const char **argv, const Command &command
                              const std::vector<MMseqsParameter*> &clusterWorkflowParams) {
     LocalParameters &par = LocalParameters::getLocalInstance();
     par.parseParameters(argc, argv, command, true, Parameters::PARSE_VARIADIC, 0);
+    if (par.minTfident > 0.0f && strcmp(clusterModule, "cluster") == 0
+            && !par.PARAM_CASCADED.wasSet) {
+        par.singleStepClustering = true;
+        par.PARAM_CASCADED.wasSet = true;
+        Debug(Debug::INFO) << "Using single-step clustering to enforce --min-tfident\n";
+    }
 
     std::string tmpDir = par.filenames.back();
     std::string hash = SSTR(par.hashParameter(command.databases, par.filenames, clusterWorkflowParams));

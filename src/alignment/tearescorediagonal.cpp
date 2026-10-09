@@ -74,7 +74,7 @@ static Matcher::result_t ungappedAlignTea(Sequence &qSeqAA, Sequence &qSeqTea,
                                            double searchSpaceSize, double mLow_ln,
                                            double mHigh_ln, double breakpoint,
                                            double c_ln, double pfp,
-                                           std::string &backtrace, const Parameters &par,
+                                           std::string &backtrace, const LocalParameters &par,
                                            float &outScorePerCol) {
     DistanceCalculator::LocalAlignment res;
     float seqId = 0.0;
@@ -95,8 +95,17 @@ static Matcher::result_t ungappedAlignTea(Sequence &qSeqAA, Sequence &qSeqTea,
         unsigned int diagLen = std::min(static_cast<unsigned int>(qSeqAA.L) - qOff,
                                         static_cast<unsigned int>(tSeqAA.L) - tOff);
         int idCnt = 0;
+        int teaIdCnt = 0;
         for (unsigned int i = 0; i < diagLen; i++) {
             idCnt += (qSeqAA.numSequence[qOff + i] == tSeqAA.numSequence[tOff + i]) ? 1 : 0;
+            if (par.minTfident > 0.0f) {
+                teaIdCnt += (qSeqTea.numSequence[qOff + i] == tSeqTea.numSequence[tOff + i]) ? 1 : 0;
+            }
+        }
+        // Linclust makes irreversible pre-clusters from this Hamming stage.
+        if (par.minTfident > 0.0f && static_cast<double>(teaIdCnt) <
+                static_cast<double>(par.minTfident) * diagLen) {
+            return Matcher::result_t(UINT_MAX, 0, 0, 0, 0, 0, 0, 0, 0, qSeqAA.L, 0, 0, tSeqAA.L, backtrace);
         }
         seqId = Util::computeSeqId(par.seqIdMode, idCnt, qSeqAA.L, tSeqAA.L, diagLen);
         float queryCov = (float)diagLen / (float)qSeqAA.L;
@@ -357,6 +366,22 @@ int tearescorediagonal(int argc, const char **argv, const Command &command) {
                     if (res.dbKey == UINT_MAX) {
                         rejected++;
                         continue;
+                    }
+
+                    // Hamming and ungapped prefilters remain permissive. The
+                    // final alignment-only rescore enforces the same tfident
+                    // definition as convertalis: TEA matches / alignment length.
+                    if (par.minTfident > 0.0f && par.rescoreMode == Parameters::RESCORE_MODE_ALIGNMENT) {
+                        unsigned int teaIdentical = 0;
+                        for (unsigned int pos = 0; pos < res.alnLength; ++pos) {
+                            teaIdentical += qSeqTea.numSequence[res.qStartPos + pos] ==
+                                            tSeqTea.numSequence[res.dbStartPos + pos];
+                        }
+                        if (res.alnLength == 0 || static_cast<double>(teaIdentical) <
+                                static_cast<double>(par.minTfident) * res.alnLength) {
+                            rejected++;
+                            continue;
+                        }
                     }
 
                     // mmseqs's --filter-hits gate: accept iff score-per-col passes
