@@ -33,6 +33,7 @@ public:
     bool seedCorrection;
     std::string seedModelFile;
     std::string seedPattern;
+    float minTfident;
 
     PARAMETER(PARAM_TEA_WEIGHT)
     PARAMETER(PARAM_TEA_MAT)
@@ -46,6 +47,7 @@ public:
     PARAMETER(PARAM_SEED_CORRECTION)
     PARAMETER(PARAM_SEED_MODEL)
     PARAMETER(PARAM_SEED_PATTERN)
+    PARAMETER(PARAM_MIN_TFIDENT)
 
     // Parameter vectors for TEA commands
     std::vector<MMseqsParameter*> createteadb;

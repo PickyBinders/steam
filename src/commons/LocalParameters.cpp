@@ -62,7 +62,11 @@ LocalParameters::LocalParameters() :
         PARAM_SEED_PATTERN(PARAM_SEED_PATTERN_ID, "--seed-pattern", "Alignment seed pattern",
                            "Alignment evidence pattern; search selects the same k5 or k6 pattern as its prefilter",
                            typeid(std::string), (void *) &seedPattern, "^(1101101|1110111)$",
-                           MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT)
+                           MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
+        PARAM_MIN_TFIDENT(PARAM_MIN_TFIDENT_ID, "--min-tfident", "Minimum TEA identity",
+                          "Minimum fraction of identical TEA letters across alignment columns, including gaps",
+                          typeid(float), (void *) &minTfident, "^(0(\\.[0-9]+)?|1(\\.0+)?)$",
+                          MMseqsParameter::COMMAND_ALIGN)
 {
     // Defaults
     teaWeight = 3.0;
@@ -77,6 +81,7 @@ LocalParameters::LocalParameters() :
     seedCorrection = true;
     seedModelFile = "seed_markov.txt";
     seedPattern = "1101101";
+    minTfident = 0.0f;
     // Register matcha.out as a bundled substitution matrix
     substitutionMatrices.push_back({"matcha.out", matcha_out, matcha_out_len});
     compBiasCorrection = 1;
@@ -90,6 +95,15 @@ LocalParameters::LocalParameters() :
     kmerSize = 5;
     spacedKmer = 1;
     spacedKmerPattern = "1101101";
+
+    // Cluster workflows create align/rescorediagonal command lines from these
+    // base parameter lists, not from teaalign/tearescorediagonal below.
+    align.push_back(&PARAM_MIN_TFIDENT);
+    rescorediagonal.push_back(&PARAM_MIN_TFIDENT);
+    clusterworkflow.push_back(&PARAM_MIN_TFIDENT);
+    linclustworkflow.push_back(&PARAM_MIN_TFIDENT);
+    easyclusterworkflow.push_back(&PARAM_MIN_TFIDENT);
+    easylinclustworkflow.push_back(&PARAM_MIN_TFIDENT);
 
     // createteadb parameters
     createteadb.push_back(&PARAM_WRITE_LOOKUP);

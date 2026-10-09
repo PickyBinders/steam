@@ -98,6 +98,11 @@ static int doTeaAlign(TeaSmithWaterman &teaSW,
         alnLength = backtrace.size();
         seqId = Util::computeSeqId(par.seqIdMode, align.identicalAACnt, querySeqLen, targetSeqLen, alnLength);
     }
+    if (par.minTfident > 0.0f &&
+        (backtrace.empty() || static_cast<double>(align.identicalTeaCnt) <
+            static_cast<double>(par.minTfident) * alnLength)) {
+        return -1;
+    }
 
     int bitScore = rankingScore;
     if (seedModel) {

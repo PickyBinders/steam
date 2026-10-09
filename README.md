@@ -79,11 +79,12 @@ Useful flags:
 | Flag | Default | Notes |
 |---|---|---|
 | `--min-seq-id` | 0 | Minimum **amino acid** sequence identity for cluster members |
+| `--min-tfident` | 0 | Minimum **TEA** identity across aligned columns (0–1); can be combined with `--min-seq-id`. A positive value selects single-step clustering by default so members satisfy the cutoff. |
 | `-c` | 0.8 | Minimum coverage |
 | `-e` | 0.01 | E-value threshold |
 | `--cov-mode` | 0 | 0=bidirectional, 1=target, 2=query |
 | `--cluster-reassign` | off | Cascaded only: corrects criteria-violations from cascaded merging |
-| `--single-step-cluster` | off | Cascaded only: skip cascading, single pass |
+| `--single-step-clustering` | off | Cascaded only: skip cascading, single pass |
 
 ## Commands
 
