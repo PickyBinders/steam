@@ -7,7 +7,9 @@
 
 int main(int argc, char **argv) {
     try {
-        if (argc != 3) throw std::runtime_error("usage: seed_evidence_bridge MODEL PATTERN");
+        const bool maximum = argc == 4 && std::string(argv[3]) == "--max-evidence";
+        if (argc != 3 && !maximum)
+            throw std::runtime_error("usage: seed_evidence_bridge MODEL PATTERN [--max-evidence]");
         AlignmentSeedEvidence model;
         model.load(argv[1], argv[2]);
         std::string q, t, bt;
@@ -21,7 +23,9 @@ int main(int argc, char **argv) {
             const auto prepared = model.prepare(q.data(), q.size());
             double e = model.evidence(prepared, t.data(), t.size(), qs, ts, bt);
             std::cout << e << '\t' << AlignmentSeedEvidence::score(raw, e)
-                      << '\t' << prepared.weights.size() << '\n';
+                      << '\t' << prepared.weights.size();
+            if (maximum) std::cout << '\t' << AlignmentSeedEvidence::maxEvidence(prepared);
+            std::cout << '\n';
         }
         if (!std::cin.eof()) throw std::runtime_error("Malformed bridge input");
     } catch (const std::exception &error) {

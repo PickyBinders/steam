@@ -2,6 +2,7 @@
 import math
 import os
 from pathlib import Path
+import random
 import subprocess
 import tempfile
 import unittest
@@ -54,6 +55,34 @@ class AlignmentSeedEvidenceTests(unittest.TestCase):
         for row in ['AAAAAAA AAAAAAA 1 0 MMMMMMM 100','AAAAAAA AAAAAAA 0 0 MZ 100',
                     'AAAAAAA AAAAAAA 0 0 MMMMMMM 2147483647','AAA AAA 0 0 MMM -1']:
             self.run_bridge(row,success=False)
+
+    def test_maximum_bounds_partial_support_and_matches_self(self):
+        # Nonuniform probabilities exercise differently weighted words and
+        # sums, not just a constant weight times the supported-word count.
+        probabilities = [.7] + [.3 / 19] * 19
+        self.model.write_text('STEAM_SEED_MARKOV_V1\nACDEFGHIKLMNPQRSTVWY\n100\n'
+                              + (' '.join(map(str, probabilities)) + '\n') * 21)
+        rng = random.Random(42)
+        for pattern in ('1101101', '1110111'):
+            rows = []
+            for length in (0, 3, 7, 32, 128, 513):
+                query = ''.join(rng.choices('ACDEFGHIKLMNPQRSTVWY', k=length))
+                rows.append(f"{query or '-'} {query or '-'} 0 0 {'M' * length or '-'} 100")
+                for offset in (0, length // 3, length // 2):
+                    target = query[offset:]
+                    target = ''.join(c if rng.random() < .8 else 'X' for c in target)
+                    rows.append(f"{query or '-'} {target or '-'} {offset} 0 {'M' * len(target) or '-'} 100")
+            result = subprocess.run([str(BRIDGE), str(self.model), pattern, '--max-evidence'],
+                                    input='\n'.join(rows) + '\n', text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            outputs = result.stdout.splitlines()
+            self.assertEqual(len(outputs), len(rows))
+            for i, line in enumerate(outputs):
+                evidence, score, _, maximum = map(float, line.split())
+                self.assertLessEqual(evidence, maximum)
+                self.assertLessEqual(score, math.floor(100 * (1 + maximum) + .5))
+                if i % 4 == 0:
+                    self.assertEqual(evidence, maximum)
 
     def test_bad_models_and_patterns_fail(self):
         row='AAAAAAA AAAAAAA 0 0 MMMMMMM 100'

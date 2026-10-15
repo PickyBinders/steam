@@ -17,6 +17,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <array>
 
 #ifdef OPENMP
 #include <omp.h>
@@ -36,14 +37,49 @@ static double computeEvalue(double rawScore, double searchSpaceSize,
     return pfp * searchSpaceSize * exp(exponent);
 }
 
+using ResidueCounts = std::array<unsigned int, 256>;
+
+static ResidueCounts countResidues(const unsigned char *sequence, unsigned int length) {
+    ResidueCounts counts = {};
+    for (unsigned int i = 0; i < length; ++i) ++counts[sequence[i]];
+    return counts;
+}
+
+// Every identical aligned pair consumes one occurrence from each sequence.
+static unsigned int sharedResidues(ResidueCounts remaining,
+                                   const unsigned char *target, unsigned int length) {
+    unsigned int shared = 0;
+    for (unsigned int i = 0; i < length; ++i) {
+        if (remaining[target[i]] > 0) {
+            --remaining[target[i]];
+            ++shared;
+        }
+    }
+    return shared;
+}
+
+static unsigned int minimumCoveredLength(unsigned int length, float coverage) {
+    unsigned int low = 0, high = length;
+    // Match computeCov()'s float division, including threshold-rounding edges.
+    while (low < high) {
+        const unsigned int middle = low + (high - low) / 2;
+        if (static_cast<float>(middle) / static_cast<float>(length) >= coverage)
+            high = middle;
+        else
+            low = middle + 1;
+    }
+    return low;
+}
+
 static int doTeaAlign(TeaSmithWaterman &teaSW,
                       Sequence &tSeqAA, Sequence &tSeqTea,
                       unsigned int querySeqLen, unsigned int targetSeqLen,
                       double searchSpaceSize, double mLow_ln, double mHigh_ln,
                       double breakpoint, double c_ln, double pfp,
-                      bool calibrated,
+                      bool calibrated, bool isIdentity,
                       const AlignmentSeedEvidence *seedModel,
-                      const AlignmentSeedEvidence::Query &seedQuery, const char *targetTea,
+                      const AlignmentSeedEvidence::Query &seedQuery, double maxSeedEvidence,
+                      const char *targetTea,
                       Matcher::result_t &res, std::string &backtrace,
                       const LocalParameters &par) {
     float seqId = 0.0;
@@ -67,6 +103,21 @@ static int doTeaAlign(TeaSmithWaterman &teaSW,
     // the uncorrected score or the ranking-only infinity placeholder.
     if (calibrated && !seedModel && align.evalue > par.evalThr) {
         return -1;
+    }
+    if (calibrated && seedModel && std::isfinite(par.evalThr)) {
+        // Skip traceback only if even supporting every query word cannot pass.
+        // An unrepresentable hypothetical score must fall back to traceback,
+        // not trigger score()'s guard when the actual score may still fit.
+        const double upper = std::floor(static_cast<double>(rankingScore)
+                                        * (1. + maxSeedEvidence) + .5);
+        if (rankingScore >= 0 && std::isfinite(upper)
+                && upper <= std::numeric_limits<int>::max()) {
+            const int bestCorrected = AlignmentSeedEvidence::score(rankingScore, maxSeedEvidence);
+            if (computeEvalue(bestCorrected, searchSpaceSize, mLow_ln, mHigh_ln,
+                              breakpoint, c_ln, pfp) > par.evalThr) {
+                return -1;
+            }
+        }
     }
 
     // Full alignment with backtrace
@@ -101,6 +152,14 @@ static int doTeaAlign(TeaSmithWaterman &teaSW,
     if (par.minTfident > 0.0f &&
         (backtrace.empty() || static_cast<double>(align.identicalTeaCnt) <
             static_cast<double>(par.minTfident) * alnLength)) {
+        return -1;
+    }
+    // These criteria were already authoritative in checkCriteria(). Apply
+    // them before scanning/sorting alignment-supported seeds, preserving its
+    // identity-hit exemption. The final check remains in place.
+    if (!isIdentity && (!(seqId >= par.seqIdThr)
+            || !Util::hasCoverage(par.covThr, par.covMode, align.qCov, align.tCov)
+            || !Util::hasAlignmentLength(par.alnLenThr, alnLength))) {
         return -1;
     }
 
@@ -174,6 +233,18 @@ int teaalign(int argc, const char **argv, const Command &command) {
         qAaDbr = new DBReader<unsigned int>(qAaDbName.c_str(), (qAaDbName + ".index").c_str(), par.threads,
                                              DBReader<unsigned int>::USE_DATA | DBReader<unsigned int>::USE_INDEX);
         qAaDbr->open(DBReader<unsigned int>::NOSORT);
+    }
+
+    const int queryTeaType = qTeaDbr->sequenceReader->getDbtype();
+    const int queryAaType = qAaDbr->getDbtype();
+    if (!Parameters::isEqualDbtype(queryTeaType, Parameters::DBTYPE_AMINO_ACIDS) ||
+        !Parameters::isEqualDbtype(queryAaType, Parameters::DBTYPE_AMINO_ACIDS) ||
+        !Parameters::isEqualDbtype(tTeaDbr.sequenceReader->getDbtype(), Parameters::DBTYPE_AMINO_ACIDS) ||
+        !Parameters::isEqualDbtype(tAaDbr.getDbtype(), Parameters::DBTYPE_AMINO_ACIDS) ||
+        qAaDbr->getSize() != qTeaDbr->sequenceReader->getSize() ||
+        tAaDbr.getSize() != tTeaDbr.sequenceReader->getSize()) {
+        Debug(Debug::ERROR) << "STEAM alignment requires paired sequence databases\n";
+        EXIT(EXIT_FAILURE);
     }
 
     // Load prefilter results
@@ -273,8 +344,8 @@ int teaalign(int argc, const char **argv, const Command &command) {
         TeaSmithWaterman teaSW(par.maxSeqLen, subMatTea.alphabetSize, par.compBiasCorrection,
                                 par.compBiasCorrectionScale, &subMatAA, &subMatTea);
 
-        Sequence qSeqAA(par.maxSeqLen, Parameters::DBTYPE_AMINO_ACIDS, (const BaseMatrix *)&subMatAA, 0, false, par.compBiasCorrection);
-        Sequence qSeqTea(par.maxSeqLen, Parameters::DBTYPE_AMINO_ACIDS, (const BaseMatrix *)&subMatTea, 0, false, par.compBiasCorrection);
+        Sequence qSeqAA(par.maxSeqLen, queryAaType, (const BaseMatrix *)&subMatAA, 0, false, par.compBiasCorrection);
+        Sequence qSeqTea(par.maxSeqLen, queryTeaType, (const BaseMatrix *)&subMatTea, 0, false, par.compBiasCorrection);
         Sequence tSeqAA(par.maxSeqLen, Parameters::DBTYPE_AMINO_ACIDS, (const BaseMatrix *)&subMatAA, 0, false, par.compBiasCorrection);
         Sequence tSeqTea(par.maxSeqLen, Parameters::DBTYPE_AMINO_ACIDS, (const BaseMatrix *)&subMatTea, 0, false, par.compBiasCorrection);
         std::string backtrace;
@@ -294,13 +365,37 @@ int teaalign(int argc, const char **argv, const Command &command) {
                 char *querySeqTea = qTeaDbr->sequenceReader->getData(queryId, thread_idx);
                 unsigned int querySeqLen = qTeaDbr->sequenceReader->getSeqLen(queryId);
 
+                if (qAaDbr->getSeqLen(qAaDbr->getId(queryKey)) != querySeqLen) {
+                    Debug(Debug::ERROR) << "Paired query sequence lengths differ\n";
+                    EXIT(EXIT_FAILURE);
+                }
                 qSeqTea.mapSequence(id, queryKey, querySeqTea, querySeqLen);
                 qSeqAA.mapSequence(id, queryKey, querySeqAA, querySeqLen);
+
+                // Unfiltered searches do no histogram work.
+                const bool coverageColumns = par.covThr > 0. &&
+                    (par.covMode == Parameters::COV_MODE_BIDIRECTIONAL
+                        || par.covMode == Parameters::COV_MODE_QUERY || par.covMode == Parameters::COV_MODE_TARGET);
+                const bool columnBound = par.alnLenThr > 1 || coverageColumns;
+                const bool aaIdentityBound = par.seqIdThr > 0.
+                    && (columnBound || par.seqIdMode != Parameters::SEQ_ID_ALN_LEN);
+                const bool teaIdentityBound = par.minTfident > 0. && columnBound;
+                const bool identityBounds = aaIdentityBound || teaIdentityBound;
+                ResidueCounts queryAACounts, queryTeaCounts;
+                if (aaIdentityBound)
+                    queryAACounts = countResidues(qSeqAA.numSequence, querySeqLen);
+                if (teaIdentityBound)
+                    queryTeaCounts = countResidues(qSeqTea.numSequence, querySeqLen);
+                const unsigned int minimumQuerySpan = identityBounds &&
+                    (par.covMode == Parameters::COV_MODE_BIDIRECTIONAL || par.covMode == Parameters::COV_MODE_QUERY)
+                    ? minimumCoveredLength(querySeqLen, par.covThr) : 0;
 
                 teaSW.ssw_init(&qSeqAA, &qSeqTea, tinySubMatAA, tinySubMatTea, &subMatAA);
                 AlignmentSeedEvidence::Query seedQuery;
                 if (seedEnabled) seedQuery = seedModel.prepare(querySeqTea, querySeqLen);
 
+                const double maxSeedEvidence = seedEnabled && calibrated && std::isfinite(par.evalThr)
+                    ? AlignmentSeedEvidence::maxEvidence(seedQuery) : 0.;
                 int passedNum = 0;
                 int rejected = 0;
                 while (*data != '\0' && passedNum < par.maxAccept && rejected < par.maxRejected) {
@@ -313,16 +408,37 @@ int teaalign(int argc, const char **argv, const Command &command) {
                     unsigned int targetId = tTeaDbr.sequenceReader->getId(dbKey);
                     const bool isIdentity = (queryId == targetId && (par.includeIdentity || sameDB));
 
-                    char *targetSeqTea = tTeaDbr.sequenceReader->getData(targetId, thread_idx);
-                    char *targetSeqAA = tAaDbr.getData(tAaDbr.getId(dbKey), thread_idx);
                     const int targetSeqLen = static_cast<int>(tTeaDbr.sequenceReader->getSeqLen(targetId));
 
-                    tSeqTea.mapSequence(targetId, dbKey, targetSeqTea, targetSeqLen);
-                    tSeqAA.mapSequence(targetId, dbKey, targetSeqAA, targetSeqLen);
-
+                    if (tAaDbr.getSeqLen(tAaDbr.getId(dbKey)) != static_cast<size_t>(targetSeqLen)) {
+                        Debug(Debug::ERROR) << "Paired target sequence lengths differ\n";
+                        EXIT(EXIT_FAILURE);
+                    }
                     if (Util::canBeCovered(par.covThr, par.covMode, static_cast<int>(querySeqLen), targetSeqLen) == false) {
                         rejected++;
                         continue;
+                    }
+                    char *targetSeqTea = tTeaDbr.sequenceReader->getData(targetId, thread_idx);
+                    char *targetSeqAA = tAaDbr.getData(tAaDbr.getId(dbKey), thread_idx);
+                    tSeqTea.mapSequence(targetId, dbKey, targetSeqTea, targetSeqLen);
+                    tSeqAA.mapSequence(targetId, dbKey, targetSeqAA, targetSeqLen);
+
+                    if (identityBounds && !isIdentity) {
+                        unsigned int minimumColumns = std::max(1, par.alnLenThr);
+                        minimumColumns = std::max(minimumColumns, minimumQuerySpan);
+                        if (par.covMode == Parameters::COV_MODE_BIDIRECTIONAL || par.covMode == Parameters::COV_MODE_TARGET)
+                            minimumColumns = std::max(minimumColumns,
+                                minimumCoveredLength(targetSeqLen, par.covThr));
+                        if ((aaIdentityBound &&
+                                !(Util::computeSeqId(par.seqIdMode,
+                                    sharedResidues(queryAACounts, tSeqAA.numSequence, targetSeqLen),
+                                    querySeqLen, targetSeqLen, minimumColumns) >= par.seqIdThr))
+                                || (teaIdentityBound &&
+                                    static_cast<double>(sharedResidues(queryTeaCounts, tSeqTea.numSequence, targetSeqLen))
+                                        < static_cast<double>(par.minTfident) * minimumColumns)) {
+                            rejected++;
+                            continue;
+                        }
                     }
 
                     Matcher::result_t res;
@@ -330,8 +446,8 @@ int teaalign(int argc, const char **argv, const Command &command) {
                                    searchSpaceSize, loglinearM_ln,
                                    loglinearMHigh_ln, par.loglinearBreakpoint,
                                    loglinearC_ln, pfp,
-                                   calibrated,
-                                   seedEnabled ? &seedModel : NULL, seedQuery, targetSeqTea,
+                                   calibrated, isIdentity,
+                                   seedEnabled ? &seedModel : NULL, seedQuery, maxSeedEvidence, targetSeqTea,
                                    res, backtrace, par) == -1) {
                         rejected++;
                         continue;

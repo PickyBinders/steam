@@ -80,6 +80,14 @@ int teasearch(int argc, const char **argv, const Command &command) {
         Debug(Debug::ERROR) << "--matcha is required for steam search\n";
         EXIT(EXIT_FAILURE);
     }
+    for (int db = 0; db < 2; ++db) {
+        const std::string sequenceDb = PrefilteringIndexReader::dbPathWithoutIndex(par.filenames[db]);
+        if (!Parameters::isEqualDbtype(FileUtil::parseDbType(sequenceDb.c_str()),
+                                      Parameters::DBTYPE_AMINO_ACIDS)) {
+            Debug(Debug::ERROR) << "STEAM search requires paired sequence databases\n";
+            EXIT(EXIT_FAILURE);
+        }
+    }
     par.validateCalibration();
     resolveSteamKmerPattern(par);
     if (!par.PARAM_SEED_PATTERN.wasSet) par.seedPattern = par.spacedKmerPattern;

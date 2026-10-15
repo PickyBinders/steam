@@ -130,6 +130,19 @@ public:
         return q.weights.empty() ? 0. : total / q.weights.size();
     }
 
+    // Supporting every distinct query word bounds any alignment's evidence.
+    // Match evidence()'s summation order to retain the bound after rounding.
+    static double maxEvidence(const Query &q) {
+        if (q.weights.empty()) return 0.;
+        std::vector<int> words;
+        words.reserve(q.weights.size());
+        for (const auto &word : q.weights) words.push_back(word.first);
+        std::sort(words.begin(), words.end());
+        double total = 0.;
+        for (int word : words) total += q.weights.find(word)->second;
+        return total / q.weights.size();
+    }
+
     static int score(int raw, double evidence) {
         const double rounded = std::floor(static_cast<double>(raw) * (1. + evidence) + .5);
         if (raw < 0 || evidence < 0 || !std::isfinite(evidence) || !std::isfinite(rounded)
