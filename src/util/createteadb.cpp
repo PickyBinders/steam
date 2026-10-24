@@ -10,7 +10,7 @@
 #include <string>
 #include <cstdlib>
 
-// Strip only reserved trailing numeric TEA fields; source accessions may
+// Strip only trailing numeric TH/TL fields; source accessions may
 // themselves contain pipes. AA headers need not carry TEA confidence.
 static std::string stripConfidenceSuffix(const char *name, size_t len) {
     std::string s(name, len);
@@ -18,10 +18,8 @@ static std::string stripConfidenceSuffix(const char *name, size_t len) {
         size_t pos = s.rfind('|');
         if (pos == std::string::npos) break;
         std::string field = s.substr(pos + 1);
-        size_t offset = field.compare(0, 4, "TLS=") == 0 ? 4 :
-                        field.compare(0, 4, "TCP=") == 0 ? 4 :
-                        field.compare(0, 6, "TSFMP=") == 0 ? 6 :
-                        field.compare(0, 2, "H=") == 0 ? 2 : 0;
+        size_t offset = field.compare(0, 3, "TH=") == 0 ? 3 :
+                        field.compare(0, 3, "TL=") == 0 ? 3 : 0;
         if (offset == 0) break;
         const char *value = field.c_str() + offset;
         char *end = NULL;

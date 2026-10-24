@@ -72,10 +72,10 @@ LocalParameters::LocalParameters() :
     teaWeight = 3.0;
     teaScale = 2.0;
     teaMatrixFile = "matcha.out";
-    loglinearM = -0.005628286904365784;
-    loglinearMHigh = -0.0013916072449292318;
-    loglinearBreakpoint = 578.0;
-    loglinearC = 0.24858538629087792;
+    loglinearM = -0.005633978159801299;
+    loglinearMHigh = -0.0014312498238873948;
+    loglinearBreakpoint = 586.0;
+    loglinearC = 0.2839183138420103;
     pFP = 1.0;
     ungappedTeaAa = true;
     seedCorrection = true;

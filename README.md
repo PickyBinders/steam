@@ -142,7 +142,7 @@ Standard MMseqs2 output columns (`fident`, `alnlen`, `qcov`, `tcov`, `evalue`, `
 
 The alignment score at each position is the sum of:
 
-- **MATCHA score**: substitution score from the TEA alphabet matrix, scaled by `--tea-scale` (default 1; use 2 for half-bit matrices)
+- **MATCHA score**: substitution score from the bundled simple EBA-count TEA matrix, scaled by `--tea-scale` (default 2 for this half-bit matrix)
 - **AA score**: BLOSUM62 substitution score, weighted by `--aa-weight` (default 3)
 
 By default, prefilter candidates are ranked using the combined MATCHA +
@@ -174,10 +174,10 @@ score breakpoint.
 The selected coefficients are:
 
 ```text
-m_low = -0.005628286904365784
-m_high = -0.0013916072449292318
-c = 0.24858538629087792
-b = 578
+m_low = -0.005633978159801299
+m_high = -0.0014312498238873948
+c = 0.2839183138420103
+b = 586
 ```
 
 ### Legacy TEA
