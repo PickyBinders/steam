@@ -2,6 +2,7 @@
 
 import argparse
 from pathlib import Path
+import random
 import subprocess
 import tempfile
 
@@ -10,6 +11,7 @@ def run(*args):
     result = subprocess.run([str(arg) for arg in args], capture_output=True, text=True)
     if result.returncode:
         raise AssertionError(f"{' '.join(map(str, args))}\n{result.stdout}\n{result.stderr}")
+    return result
 
 
 def sequence(path):
@@ -31,6 +33,47 @@ def records(prefix):
                 Path(str(prefix) + '.index').read_text().splitlines())}
 
 
+def check_cascade_calibration(steam, work):
+    # Unrelated synthetic sequences keep representatives in every cascade stage.
+    rng = random.Random(42)
+    names = {f"sequence{i}" for i in range(16)}
+    inputs = []
+    for alphabet in ("aa", "tea"):
+        fasta = work / f"cascade-{alphabet}.fasta"
+        fasta.write_text("".join(
+            f">{name}\n{''.join(rng.choices('ACDEFGHIKLMNPQRSTVWY', k=128))}\n"
+            for name in sorted(names)))
+        inputs.append(fasta)
+    db = work / "cascade-db"
+    run(steam, "createdb", inputs[1], inputs[0], db, "--threads", 2)
+    cases = [(cutoff, 1, 0) for cutoff in ("0.001", "0.01", "0.1", "1")]
+    cases += [("0.01", 1, 0.9), ("inf", 0, 0)]
+    for cutoff, correction, identity in cases:
+        output = work / f"cascade-{cutoff}-{identity}"
+        extra = ["--comp-bias-corr", 0] if correction == 0 else []
+        result = run(steam, "cluster", db, output, work / f"cascade-tmp-{cutoff}-{identity}",
+                     "-c", 0, "-e", cutoff, "--min-seq-id", identity,
+                     "--threads", 2, "-v", 3, *extra)
+        log = result.stdout + result.stderr
+        alignments = [line for line in log.splitlines()
+                      if line.startswith("align ") and "aln_step" in line]
+        assert len(alignments) == (1 if identity >= 0.7 else 3), log
+        assert all(f"--comp-bias-corr {correction} " in line for line in alignments), log
+        prefilter = [line for line in log.splitlines()
+                     if line.startswith("prefilter ") and "pref_step0" in line]
+        assert len(prefilter) == 1 and "--comp-bias-corr 0 " in prefilter[0], log
+        tsv = work / f"cascade-{cutoff}-{identity}.tsv"
+        run(steam, "createtsv", db, db, output, tsv, "--threads", 2)
+        members = [line.split("\t")[1] for line in tsv.read_text().splitlines()]
+        assert len(members) == len(names) and set(members) == names, members
+    output = work / "easy-cascade"
+    run(steam, "easy-cluster", inputs[1], inputs[0], output, work / "easy-cascade-tmp",
+        "-c", 0, "--threads", 2)
+    members = [line.split("\t")[1] for line in
+               Path(str(output) + "_cluster.tsv").read_text().splitlines()]
+    assert len(members) == len(names) and set(members) == names, members
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--steam", type=Path, required=True)
@@ -47,6 +90,7 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="steam-tfident-") as directory:
         work = Path(directory)
+        check_cascade_calibration(steam, work)
         aa_fasta = work / "aa.fasta"
         tea_fasta = work / "tea.fasta"
         aa_fasta.write_text(f">first\n{aa}\n>second\n{aa}\n")
@@ -117,7 +161,8 @@ def main():
                     work / f'index-search-tmp-{k}-{selected_k}',
                     '-k', selected_k, '-e', 'inf', '-a', 1, '--threads', 2)
                 assert records(before) == records(result), (k, selected_k)
-        print("PASS: cluster splits by tfident; easy-cluster passes it through; "
+        print("PASS: finite-E cascades retain alignment settings; "
+              "cluster splits by tfident; easy-cluster passes it through; "
               "profile/iteration inputs rejected; k5/k6 explicit and automatic index search unchanged")
 
 

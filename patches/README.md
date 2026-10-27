@@ -7,7 +7,7 @@ versions fail configuration. Apply the complete set before compiling.
 | Patch | Purpose |
 | --- | --- |
 | `0001-steam-bucket-filter.patch` | Per-database frequent-seed thresholds and exclusion in QueryMatcher; fixed 10% default. |
-| `0002-steam-cluster-prefilter-submat.patch` | Keep TEA prefilter matrices separate from AA alignment matrices in existing clustering workflows. |
+| `0002-steam-cluster-prefilter-submat.patch` | Keep TEA prefilter matrices separate from AA alignment matrices, and preserve alignment composition settings in cascaded clustering. |
 | `0003-steam-linclust-bucket-filter.patch` | Frequent-seed exclusion in linclust, which has its own matcher; 10% default. |
 | `0004-combined-tea-aa-ungapped.patch` | Companion-AA database and matrix loading, plus combined TEA+AA diagonal scoring before candidate truncation. |
 | `0005-preserve-spaced-pattern-index.patch` | Write nonempty spaced patterns into cached-index metadata, preserving k5/k6 seed selection. |
