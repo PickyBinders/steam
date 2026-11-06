@@ -60,6 +60,12 @@ Useful flags:
 
 `easy-cluster` runs cascaded clustering (sensitive) and `easy-linclust` runs linear-time clustering (faster, less sensitive). Both take paired TEA/AA FASTAs:
 
+Cascaded clustering ranks prefilter candidates by combined TEA+AA ungapped
+scores, retaining at most 100, 200, and `--max-seqs` candidates in its three
+stages (final default: 1000). Smaller explicit limits are respected at every
+stage. Single-step clustering uses the final limit directly. Clustering uses
+300 sampled k-mers per sequence by default.
+
 ```bash
 # Cascaded clustering
 steam easy-cluster proteins_tea.fasta proteins_aa.fasta clusterResult tmp
@@ -149,6 +155,10 @@ By default, prefilter candidates are ranked using the combined MATCHA +
 weighted AA ungapped diagonal score before the `--max-seqs` cutoff. Pass
 `--ungapped-tea-aa 0` for TEA-only ungapped ranking. K-mer matching still uses
 TEA sequences.
+
+Standalone `steam prefilter queryDB targetDB resultDB` uses the same setup:
+the TEA matrix (`--matcha`), paired AA scoring (`--aa-weight`), and automatic
+k-mer/pattern selection. `--sub-mat` selects the AA matrix, as in `search`.
 
 For an exported TEA matrix, verify the native loaded integers before searching:
 

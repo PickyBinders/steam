@@ -1,9 +1,7 @@
 // Steam wrappers for cluster / linclust / easy-cluster / easy-linclust.
 //
-// cluster + linclust: thin wrappers that setenv MMSEQS_PREFILTER_SUBMAT so
-// the patched mmseqs Cluster.cpp/Linclust.cpp swap par.scoringMatrixFile to
-// matcha.out around prefilter param string generation. The actual workflow
-// runs upstream's clusteringworkflow() / linclust() entry points.
+// The patched upstream workflows configure paired scoring after parsing their
+// parameters. These wrappers select STEAM defaults and tfident semantics.
 //
 // easy-cluster + easy-linclust: drive our own easyteacluster.sh because
 // steam's `createdb` takes <tea_fa> <aa_fa> <out>, not a variadic FASTA list,
@@ -26,8 +24,6 @@
 #include "easyteacluster.sh.h"
 
 static void setupTeaEnv() {
-    LocalParameters &par = LocalParameters::getLocalInstance();
-    setenv("MMSEQS_PREFILTER_SUBMAT", par.teaMatrixFile.empty() ? "matcha.out" : par.teaMatrixFile.c_str(), 1);
     setenv("STEAM_CLUSTER_DEFAULTS", "1", 1);
 }
 

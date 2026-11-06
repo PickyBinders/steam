@@ -1,6 +1,10 @@
 #include "LocalParameters.h"
 #include "Debug.h"
 #include "matcha.out.h"
+#include "FileUtil.h"
+#include "IndexReader.h"
+#include "Util.h"
+#include <cstdlib>
 #include <cmath>
 #include <iostream>
 
@@ -20,7 +24,7 @@ LocalParameters::LocalParameters() :
                         "Alphabet score units per bit (2 for half-bit TEA matrices)",
                         typeid(float), (void *) &teaScale,
                         "^[0-9]*(\\.[0-9]+)?$",
-                        MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_EXPERT),
+                        MMseqsParameter::COMMAND_ALIGN | MMseqsParameter::COMMAND_PREFILTER | MMseqsParameter::COMMAND_EXPERT),
         PARAM_LOGLINEAR_M(PARAM_LOGLINEAR_M_ID, "--loglinear-m", "Low-score log-linear slope",
                           "Slope below the optional breakpoint in the continuous log-linear E-value model",
                           typeid(float), (void *) &loglinearM,
@@ -130,8 +134,8 @@ LocalParameters::LocalParameters() :
         &PARAM_LOGLINEAR_BREAKPOINT, &PARAM_LOGLINEAR_C, &PARAM_P_FP,
     });
 
-    // teaprefilter = base prefilter list (for the steam-specific prefilter alias)
-    teaprefilter = prefilter;
+    teaprefilter = combineList(prefilter, {&PARAM_TEA_MAT, &PARAM_TEA_WEIGHT,
+        &PARAM_TEA_SCALE, &PARAM_UNGAPPED_TEA_AA});
 
     // teasearch = prefilter + teaalign + tearescorediagonal + common
     teasearchworkflow = combineList(prefilter, teaalign);
@@ -143,6 +147,143 @@ LocalParameters::LocalParameters() :
     // easyteasearch = teasearch + createteadb + convertalis
     easyteasearchworkflow = combineList(teasearchworkflow, createteadb);
     easyteasearchworkflow = combineList(easyteasearchworkflow, convertalignments);
+
+    // Upstream clustering serializes these base lists for its child commands.
+    align = teaalign;
+    rescorediagonal = tearescorediagonal;
+    clusterworkflow = combineList(clusterworkflow, teaalign);
+    clusterworkflow = combineList(clusterworkflow, {&PARAM_UNGAPPED_TEA_AA});
+    linclustworkflow = combineList(linclustworkflow, tearescorediagonal);
+    linclustworkflow = combineList(linclustworkflow, {&PARAM_UNGAPPED_TEA_AA,
+        &PARAM_SEED_CORRECTION, &PARAM_SEED_MODEL, &PARAM_SEED_PATTERN});
+    easyclusterworkflow = combineList(easyclusterworkflow, clusterworkflow);
+    easylinclustworkflow = combineList(easylinclustworkflow, linclustworkflow);
+}
+
+constexpr const char *STEAM_K5_PATTERN = "1101101";
+constexpr const char *STEAM_K6_PATTERN = "1110111";
+
+void LocalParameters::resolveKmerPattern(const std::string &targetDb) {
+    LocalParameters &par = *this;
+    if (par.PARAM_SPACED_KMER_PATTERN.wasSet && par.kmerSize == 0) {
+        par.kmerSize = 0;
+        for (char position : par.spacedKmerPattern) {
+            par.kmerSize += position == '1';
+        }
+    }
+    // Read only target index metadata, never target sequence data. Scale the
+    // MMseqs k6 limit by one 20-letter seed position for STEAM's k5/k6 range.
+    if (par.kmerSize == 0) {
+        IndexReader target(targetDb, 1, IndexReader::SEQUENCES,
+                           IndexReader::PRELOAD_NO, DBReader<unsigned int>::USE_INDEX);
+        if (target.index != NULL) {
+            par.kmerSize = PrefilteringIndexReader::getMetadata(target.index).kmerSize;
+            if (!par.PARAM_SPACED_KMER_PATTERN.wasSet) {
+                par.spacedKmerPattern = PrefilteringIndexReader::getSpacedPattern(target.index);
+                par.spacedKmer = PrefilteringIndexReader::getMetadata(target.index).spacedKmer;
+            }
+        } else {
+            const size_t k5Limit = IndexTable::getUpperBoundAACountForKmerSize(6) / 20;
+            par.kmerSize = target.sequenceReader->getAminoAcidDBSize() < k5Limit ? 5 : 6;
+        }
+    }
+    if (par.spacedKmer && !par.PARAM_SPACED_KMER_PATTERN.wasSet
+            && par.spacedKmerPattern.empty()) {
+        if (par.kmerSize == 5) {
+            par.spacedKmerPattern = STEAM_K5_PATTERN;
+        } else if (par.kmerSize == 6) {
+            par.spacedKmerPattern = STEAM_K6_PATTERN;
+        }
+    }
+    if (!par.spacedKmerPattern.empty()) {
+        int patternWeight = 0;
+        for (char position : par.spacedKmerPattern) {
+            patternWeight += position == '1';
+        }
+        if (patternWeight != par.kmerSize) {
+            Debug(Debug::ERROR)
+                << "STEAM spaced k-mer pattern weight " << patternWeight
+                << " does not match k=" << par.kmerSize << "\n";
+            EXIT(EXIT_FAILURE);
+        }
+    }
+
+    Debug(Debug::INFO)
+        << "STEAM k-mer selection: k=" << par.kmerSize
+        << ", pattern=" << (par.spacedKmerPattern.empty()
+                              ? "<contiguous>" : par.spacedKmerPattern)
+        << "\n";
+}
+
+
+void LocalParameters::configureUngappedScoring(bool combined) {
+    if (combined && teaScale != 2.0f) {
+        Debug(Debug::ERROR) << "Combined ungapped scoring requires --tea-scale 2; use --ungapped-tea-aa 0 for other scales\n";
+        EXIT(EXIT_FAILURE);
+    }
+    if (combined && !diagonalScoring) {
+        Debug(Debug::ERROR) << "Combined ungapped scoring requires --diag-score 1\n";
+        EXIT(EXIT_FAILURE);
+    }
+    setenv("STEAM_PREFILTER_CONFIGURED", "1", 1);
+    setenv("STEAM_SPLIT_INVARIANT", "1", 1);
+    setenv("STEAM_UNGAPPED_AA", combined ? "1" : "0", 1);
+    setenv("STEAM_UNGAPPED_AA_SUBMAT", scoringMatrixFile.values.aminoacid().c_str(), 1);
+    setenv("STEAM_UNGAPPED_AA_WEIGHT", SSTR(teaWeight).c_str(), 1);
+}
+
+void LocalParameters::configurePrefilter() {
+    // Workflow children already receive a TEA --sub-mat and the separate AA
+    // matrix. Do not reinterpret that TEA matrix as an AA scoring matrix.
+    const char *configured = getenv("STEAM_PREFILTER_CONFIGURED");
+    if (configured != NULL && std::string(configured) == "1") return;
+    if (teaMatrixFile.empty()) {
+        Debug(Debug::ERROR) << "--matcha is required for STEAM prefilter\n";
+        EXIT(EXIT_FAILURE);
+    }
+    for (const std::string &input : {db1, db2}) {
+        const std::string base = PrefilteringIndexReader::dbPathWithoutIndex(input);
+        if (!Parameters::isEqualDbtype(FileUtil::parseDbType(base.c_str()), DBTYPE_AMINO_ACIDS)
+                || (ungappedTeaAa && !Parameters::isEqualDbtype(
+                    FileUtil::parseDbType((base + "_aa").c_str()), DBTYPE_AMINO_ACIDS))) {
+            Debug(Debug::ERROR) << "Combined STEAM prefilter requires paired TEA/AA sequence databases\n";
+            EXIT(EXIT_FAILURE);
+        }
+    }
+    if (!PARAM_K.wasSet) kmerSize = 0;
+    if (!PARAM_SPACED_KMER_PATTERN.wasSet) spacedKmerPattern.clear();
+    resolveKmerPattern(db2);
+    configureUngappedScoring(ungappedTeaAa);
+    scoringMatrixFile = MultiParam<NuclAA<std::string>>(NuclAA<std::string>(teaMatrixFile, teaMatrixFile));
+    initMatrices();
+    compBiasCorrectionScale = 0.0f;
+}
+
+void LocalParameters::configureClustering(bool linear) {
+    if (!Parameters::isEqualDbtype(FileUtil::parseDbType(db1.c_str()), DBTYPE_AMINO_ACIDS)
+            || !Parameters::isEqualDbtype(FileUtil::parseDbType((db1 + "_aa").c_str()), DBTYPE_AMINO_ACIDS)) {
+        Debug(Debug::ERROR) << "STEAM clustering requires paired sequence databases\n";
+        EXIT(EXIT_FAILURE);
+    }
+    if (teaMatrixFile.empty()) {
+        Debug(Debug::ERROR) << "--matcha is required for STEAM clustering\n";
+        EXIT(EXIT_FAILURE);
+    }
+    // Linclust selects its own k for the reduced alphabet; it must not inherit
+    // search's k5/k6 selection, even when the caller enables spaced k-mers.
+    if (spacedKmer && !linear) {
+        if (!PARAM_K.wasSet) kmerSize = 0;
+        if (!PARAM_SPACED_KMER_PATTERN.wasSet) spacedKmerPattern.clear();
+        resolveKmerPattern(db1);
+        if (!PARAM_SEED_PATTERN.wasSet) seedPattern = spacedKmerPattern;
+        if (seedCorrection && seedPattern != spacedKmerPattern) {
+            Debug(Debug::ERROR) << "Alignment and prefilter seed patterns must agree\n";
+            EXIT(EXIT_FAILURE);
+        }
+    }
+    validateCalibration();
+    setenv("MMSEQS_PREFILTER_SUBMAT", teaMatrixFile.c_str(), 1);
+    configureUngappedScoring(ungappedTeaAa);
 }
 
 bool LocalParameters::validateCalibration() {

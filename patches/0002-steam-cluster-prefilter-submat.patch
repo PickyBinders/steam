@@ -1,5 +1,110 @@
+diff --git a/data/workflow/cascaded_clustering.sh b/data/workflow/cascaded_clustering.sh
+index b98a708c..606e28d8 100755
+--- a/data/workflow/cascaded_clustering.sh
++++ b/data/workflow/cascaded_clustering.sh
+@@ -158,6 +158,16 @@ if [ -n "$REASSIGN" ]; then
+         # try to find best matching centroid sequences for prev. wrong assigned sequences
+         if notExists "${TMP_PATH}/seq_wrong_assigned_pref.dbtype"; then
+             if notExists "${TMP_PATH}/seq_seeds.merged.dbtype"; then
++                if [ -n "$STEAM_CLUSTER_DEFAULTS" ]; then
++                    # Subsetting the source also carries AA companions and
++                    # recomputes the complete target's diversity metadata.
++                    awk '!seen[$1]++ { print $1 }' "${TMP_PATH}/seq_seeds.index" \
++                        "${TMP_PATH}/seq_wrong_assigned.index" > "${TMP_PATH}/seq_seeds.merged.keys"
++                    # shellcheck disable=SC2086
++                    "$MMSEQS" createsubdb "${TMP_PATH}/seq_seeds.merged.keys" "$SOURCE" \
++                        "${TMP_PATH}/seq_seeds.merged" ${VERBOSITY} \
++                        || fail "Paired reassignment target construction died"
++                else
+                 # combine seq dbs
+                 MAXOFFSET=$(awk '($2+$3) > max { max = $2+$3 } END { printf("%.0f\n", max); }' "${TMP_PATH}/seq_seeds.index")
+                 awk -v OFFSET="${MAXOFFSET}" 'FNR == NR { print $0; next } { printf("%s\t%.0f\t%s\n", $1, $2+OFFSET, $3); }' "${TMP_PATH}/seq_seeds.index" \
+@@ -165,6 +175,7 @@ if [ -n "$REASSIGN" ]; then
+                 ln -s "$(abspath "${TMP_PATH}/seq_seeds")" "${TMP_PATH}/seq_seeds.merged.0"
+                 ln -s "$(abspath "${TMP_PATH}/seq_wrong_assigned")" "${TMP_PATH}/seq_seeds.merged.1"
+                 cp "${TMP_PATH}/seq_seeds.dbtype" "${TMP_PATH}/seq_seeds.merged.dbtype"
++                fi
+             fi
+             # shellcheck disable=SC2086
+             $RUNNER "$MMSEQS" prefilter "${TMP_PATH}/seq_wrong_assigned" "${TMP_PATH}/seq_seeds.merged" "${TMP_PATH}/seq_wrong_assigned_pref" ${PREFILTER_REASSIGN_PAR} \
+@@ -281,4 +292,3 @@ if [ -n "$REMOVE_TMP" ]; then
+ 
+     rm -f "${TMP_PATH}/cascaded_clustering.sh"
+ fi
+-
+diff --git a/data/workflow/clustering.sh b/data/workflow/clustering.sh
+index fa419b5c..d0ec196b 100755
+--- a/data/workflow/clustering.sh
++++ b/data/workflow/clustering.sh
+@@ -19,6 +19,7 @@ notExists() {
+ INPUT="$1"
+ TMP_PATH="$3"
+ 
++if [ -z "$STEAM_CLUSTER_DEFAULTS" ]; then
+ if notExists "${TMP_PATH}/aln_redundancy.dbtype"; then
+     # shellcheck disable=SC2086
+     "$MMSEQS" clusthash "$INPUT" "${TMP_PATH}/aln_redundancy" ${DETECTREDUNDANCY_PAR} \
+@@ -36,9 +37,12 @@ if notExists "${TMP_PATH}/input_step_redundancy.dbtype"; then
+     "$MMSEQS" createsubdb "${TMP_PATH}/clu_redundancy" "$INPUT" "${TMP_PATH}/input_step_redundancy" ${VERBOSITY} --subdb-mode 1 \
+         || fail "MMseqs order step $STEP died"
+ fi
++fi
+ 
+ ORIGINAL="$INPUT"
++if [ -z "$STEAM_CLUSTER_DEFAULTS" ]; then
+ INPUT="${TMP_PATH}/input_step_redundancy"
++fi
+ # call prefilter module
+ if notExists "${TMP_PATH}/pref.dbtype"; then
+     # shellcheck disable=SC2086
+@@ -61,9 +65,14 @@ if notExists "${TMP_PATH}/clu_step0.dbtype"; then
+ fi
+ 
+ # merge clu_redundancy and clu
++if [ -n "$STEAM_CLUSTER_DEFAULTS" ]; then
++    # Single-step STEAM must check both alphabets before merging any pair.
++    "$MMSEQS" mvdb "${TMP_PATH}/clu_step0" "$2" ${VERBOSITY} || fail "Moving clusters died"
++else
+ # shellcheck disable=SC2086
+ "$MMSEQS" mergeclusters "$ORIGINAL" "$2" "${TMP_PATH}/clu_redundancy" "${TMP_PATH}/clu_step0" $MERGECLU_PAR \
+         || fail "Merging of clusters has died"
++fi
+ 
+ if [ -n "$REMOVE_TMP" ]; then
+     # shellcheck disable=SC2086
+@@ -71,13 +80,13 @@ if [ -n "$REMOVE_TMP" ]; then
+     # shellcheck disable=SC2086
+     "$MMSEQS" rmdb "${TMP_PATH}/aln" ${VERBOSITY}
+     # shellcheck disable=SC2086
+-    "$MMSEQS" rmdb "${TMP_PATH}/clu_step0" ${VERBOSITY}
++    [ ! -f "${TMP_PATH}/clu_step0.dbtype" ] || "$MMSEQS" rmdb "${TMP_PATH}/clu_step0" ${VERBOSITY}
+     # shellcheck disable=SC2086
+-    "$MMSEQS" rmdb "${TMP_PATH}/clu_redundancy" ${VERBOSITY}
++    [ ! -f "${TMP_PATH}/clu_redundancy.dbtype" ] || "$MMSEQS" rmdb "${TMP_PATH}/clu_redundancy" ${VERBOSITY}
+     # shellcheck disable=SC2086
+-    "$MMSEQS" rmdb "${TMP_PATH}/aln_redundancy" ${VERBOSITY}
++    [ ! -f "${TMP_PATH}/aln_redundancy.dbtype" ] || "$MMSEQS" rmdb "${TMP_PATH}/aln_redundancy" ${VERBOSITY}
+     # shellcheck disable=SC2086
+-    "$MMSEQS" rmdb "${TMP_PATH}/input_step_redundancy" ${VERBOSITY}
++    [ ! -f "${TMP_PATH}/input_step_redundancy.dbtype" ] || "$MMSEQS" rmdb "${TMP_PATH}/input_step_redundancy" ${VERBOSITY}
+     rm -f "${TMP_PATH}/order_redundancy"
+     rm -f "${TMP_PATH}/clustering.sh"
+ fi
+diff --git a/src/commons/Parameters.h b/src/commons/Parameters.h
+index 805dfedf..e88469ae 100644
+--- a/src/commons/Parameters.h
++++ b/src/commons/Parameters.h
+@@ -775,6 +775,8 @@ public:
+     friend void initParameterSingleton(void);
+ 
+     void setDefaults();
++    // Extension hook after clustering parameters have been parsed.
++    virtual void configureClustering(bool linear = false) { (void) linear; }
+     void initMatrices();
+     void parseParameters(int argc, const char *pargv[], const Command &command, bool printPar, int parseFlags,
+                          int outputFlags);
 diff --git a/src/workflow/Cluster.cpp b/src/workflow/Cluster.cpp
-index 6293eb4a..7ba384f3 100644
+index 6293eb4a..6e37178f 100644
 --- a/src/workflow/Cluster.cpp
 +++ b/src/workflow/Cluster.cpp
 @@ -11,12 +11,29 @@
@@ -41,13 +146,34 @@ index 6293eb4a..7ba384f3 100644
          par.compBiasCorrection = 0;
          par.PARAM_NO_COMP_BIAS_CORR.wasSet = true;
      }
-@@ -194,10 +211,18 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
+@@ -115,6 +132,7 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
+     par.PARAM_S.addCategory(MMseqsParameter::COMMAND_EXPERT);
+     par.PARAM_INCLUDE_ONLY_EXTENDABLE.addCategory(MMseqsParameter::COMMAND_EXPERT);
+     par.parseParameters(argc, argv, command, false, 0, 0);
++    par.configureClustering();
+     const int dbType = FileUtil::parseDbType(par.db1.c_str());
+     bool isNucleotideDb = (Parameters::isEqualDbtype(dbType, Parameters::DBTYPE_NUCLEOTIDES));
+     if (isNucleotideDb) {
+@@ -181,6 +199,7 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
+     } else if (par.singleStepClustering == false) {
+         // save some values to restore them later
+         float targetSensitivity = par.sensitivity;
++        const int targetMaxResListLen = par.maxResListLen;
+         MultiParam<NuclAA<int>> alphabetSize = par.alphabetSize;
+         par.alphabetSize = MultiParam<NuclAA<int>>(NuclAA<int>(Parameters::CLUST_LINEAR_DEFAULT_ALPH_SIZE, 5));
+         int kmerSize = par.kmerSize;
+@@ -194,10 +213,22 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
          // 1 is lowest sens
          par.sensitivity = ((par.clusterSteps - 1) == 0) ? par.sensitivity : 1;
          int minDiagScoreThr = par.minDiagScoreThr;
 +        const int alignmentCompBiasCorrection = par.compBiasCorrection;
          par.minDiagScoreThr = 0;
-         par.diagonalScoring = 0;
+-        par.diagonalScoring = 0;
++        par.diagonalScoring = steamPrefilterSubMat() && getenv("STEAM_UNGAPPED_AA")
++            && strcmp(getenv("STEAM_UNGAPPED_AA"), "0") != 0;
++        if (steamPrefilterSubMat() && par.clusterSteps > 1) {
++            par.maxResListLen = std::min(100, targetMaxResListLen);
++        }
          par.compBiasCorrection = 0;
 +        MultiParam<NuclAA<std::string>> _savedSubMat0;
 +        STEAM_SWAP_PREFILTER_SUBMAT(par, _savedSubMat0);
@@ -60,16 +186,24 @@ index 6293eb4a..7ba384f3 100644
          if (isUngappedMode) {
              par.rescoreMode = Parameters::RESCORE_MODE_ALIGNMENT;
              cmd.addVariable("ALIGNMENT0_PAR", par.createParameterString(par.rescorediagonal).c_str());
-@@ -207,13 +232,16 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
+@@ -206,14 +237,23 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
+             cmd.addVariable("ALIGNMENT0_PAR", par.createParameterString(par.align).c_str());
          }
          cmd.addVariable("CLUSTER0_PAR", par.createParameterString(par.clust).c_str());
++        par.maxResListLen = targetMaxResListLen;
          par.diagonalScoring = 1;
 -        par.compBiasCorrection = 1;
 +        par.compBiasCorrection = steamPrefilterSubMat() ? alignmentCompBiasCorrection : 1;
          par.minDiagScoreThr = minDiagScoreThr;
-         float sensStepSize = (targetSensitivity - 1) / (static_cast<float>(par.clusterSteps) - 1);
+-        float sensStepSize = (targetSensitivity - 1) / (static_cast<float>(par.clusterSteps) - 1);
++        float sensStepSize = par.clusterSteps > 1
++            ? (targetSensitivity - 1) / (static_cast<float>(par.clusterSteps) - 1) : 0;
          for (int step = 1; step < par.clusterSteps; step++) {
              par.sensitivity = 1.0 + sensStepSize * step;
++            if (steamPrefilterSubMat()) {
++                par.maxResListLen = step == par.clusterSteps - 1
++                    ? targetMaxResListLen : std::min(200, targetMaxResListLen);
++            }
  
 +            MultiParam<NuclAA<std::string>> _savedSubMatI;
 +            STEAM_SWAP_PREFILTER_SUBMAT(par, _savedSubMatI);
@@ -78,7 +212,15 @@ index 6293eb4a..7ba384f3 100644
              if (isUngappedMode) {
                  par.rescoreMode = Parameters::RESCORE_MODE_ALIGNMENT;
                  cmd.addVariable(std::string("ALIGNMENT" + SSTR(step) + "_PAR").c_str(), par.createParameterString(par.rescorediagonal).c_str());
-@@ -233,7 +261,10 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
+@@ -224,6 +264,7 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
+             cmd.addVariable(std::string("CLUSTER" + SSTR(step) + "_PAR").c_str(), par.createParameterString(par.clust).c_str());
+         }
+         cmd.addVariable("STEPS", SSTR(par.clusterSteps).c_str());
++        par.maxResListLen = targetMaxResListLen;
+         // correct for cascading clustering errors
+         if (par.clusterReassignment) {
+             cmd.addVariable("REASSIGN", "TRUE");
+@@ -233,7 +274,10 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
          int swapedCovMode = Util::swapCoverageMode(par.covMode);
          int tmpCovMode = par.covMode;
          par.covMode = swapedCovMode;
@@ -89,7 +231,7 @@ index 6293eb4a..7ba384f3 100644
          par.covMode = tmpCovMode;
          cmd.addVariable("ALIGNMENT_REASSIGN_PAR", par.createParameterString(par.align).c_str());
          cmd.addVariable("MERGEDBS_PAR", par.createParameterString(par.mergedbs).c_str());
-@@ -250,7 +281,10 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
+@@ -250,7 +294,10 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
          cmd.addVariable("DETECTREDUNDANCY_PAR", par.createParameterString(par.clusthash).c_str());
          par.alphabetSize = alphabetSize;
          par.seqIdThr = seqIdThr;
@@ -101,7 +243,7 @@ index 6293eb4a..7ba384f3 100644
              cmd.addVariable("ALIGNMENT_PAR", par.createParameterString(par.rescorediagonal).c_str());
          } else {
 diff --git a/src/workflow/Linclust.cpp b/src/workflow/Linclust.cpp
-index 5a5dedce..db901940 100644
+index 5a5dedce..5d78ee0c 100644
 --- a/src/workflow/Linclust.cpp
 +++ b/src/workflow/Linclust.cpp
 @@ -9,6 +9,18 @@
@@ -135,7 +277,15 @@ index 5a5dedce..db901940 100644
  }
  
  int linclust(int argc, const char **argv, const Command& command) {
-@@ -93,7 +110,10 @@ int linclust(int argc, const char **argv, const Command& command) {
+@@ -31,6 +48,7 @@ int linclust(int argc, const char **argv, const Command& command) {
+     par.PARAM_INCLUDE_ONLY_EXTENDABLE.addCategory(MMseqsParameter::COMMAND_EXPERT);
+ 
+     par.parseParameters(argc, argv, command, true, 0, 0);
++    par.configureClustering(true);
+ 
+     std::string tmpDir = par.db3;
+     std::string hash = SSTR(par.hashParameter(command.databases, par.filenames, par.linclustworkflow));
+@@ -93,7 +111,10 @@ int linclust(int argc, const char **argv, const Command& command) {
      cmd.addVariable("ALIGN_MODULE", isUngappedMode ? "rescorediagonal" : "align");
      // filter by diagonal in case of AA (do not filter for nucl, profiles, ...)
      cmd.addVariable("FILTER", Parameters::isEqualDbtype(dbType, Parameters::DBTYPE_AMINO_ACIDS) ? "1" : NULL);

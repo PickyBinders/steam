@@ -3,6 +3,8 @@
 import argparse
 from pathlib import Path
 import random
+import re
+import shlex
 import subprocess
 import tempfile
 
@@ -55,6 +57,8 @@ def check_cascade_calibration(steam, work):
                      "-c", 0, "-e", cutoff, "--min-seq-id", identity,
                      "--threads", 2, "-v", 3, *extra)
         log = result.stdout + result.stderr
+        matcher = [line for line in log.splitlines() if line.startswith("kmermatcher ")]
+        assert matcher and all(" -k 0 " in line for line in matcher), log
         alignments = [line for line in log.splitlines()
                       if line.startswith("align ") and "aln_step" in line]
         assert len(alignments) == (1 if identity >= 0.7 else 3), log
@@ -62,6 +66,12 @@ def check_cascade_calibration(steam, work):
         prefilter = [line for line in log.splitlines()
                      if line.startswith("prefilter ") and "pref_step0" in line]
         assert len(prefilter) == 1 and "--comp-bias-corr 0 " in prefilter[0], log
+        prefilters = [line for line in log.splitlines()
+                      if line.startswith("prefilter ") and "pref_step" in line]
+        caps = [int(re.search(r"--max-seqs (\d+)", line)[1]) for line in prefilters]
+        assert caps == ([1000] if identity >= 0.7 else [100, 200, 1000]), log
+        assert all("--diag-score 1 " in line for line in prefilters), log
+        assert len(re.findall(r"Combined TEA\+AA ungapped diagonal scoring enabled \(AA weight 3(?:\.0+)?\)", log)) == len(prefilters), log
         tsv = work / f"cascade-{cutoff}-{identity}.tsv"
         run(steam, "createtsv", db, db, output, tsv, "--threads", 2)
         members = [line.split("\t")[1] for line in tsv.read_text().splitlines()]
@@ -72,6 +82,82 @@ def check_cascade_calibration(steam, work):
     members = [line.split("\t")[1] for line in
                Path(str(output) + "_cluster.tsv").read_text().splitlines()]
     assert len(members) == len(names) and set(members) == names, members
+
+    # Explicit limits remain upper bounds; the last stage always uses the
+    # requested cap, including one- and two-stage cascades.
+    for steps, limit, caps in ((1, 37, [37]), (2, 137, [100, 137]),
+                               (3, 50, [50, 50, 50]), (4, 700, [100, 200, 200, 700])):
+        result = run(steam, "cluster", db, work / f"caps-{steps}-{limit}",
+                     work / f"caps-tmp-{steps}-{limit}", "-c", 0,
+                     "--cluster-steps", steps, "--max-seqs", limit, "--threads", 2)
+        prefilters = [line for line in (result.stdout + result.stderr).splitlines()
+                      if line.startswith("prefilter ") and "pref_step" in line]
+        assert [int(re.search(r"--max-seqs (\d+)", line)[1]) for line in prefilters] == caps
+
+    # Custom scoring options must reach all child alignments and the combined
+    # diagonal scorer, not fall back to the default matrices/AA weight.
+    custom_matrix = work / "custom.out"
+    source = Path(__file__).parents[1] / "data" / "matcha.out"
+    custom_matrix.write_bytes(source.read_bytes())
+    result = run(steam, "cluster", db, work / "custom", work / "custom-tmp",
+                 "--matcha", custom_matrix, "--aa-weight", 4, "-e", "inf", "-c", 0,
+                 "--threads", 2)
+    log = result.stdout + result.stderr
+    assert len(re.findall(r"Combined TEA\+AA ungapped diagonal scoring enabled \(AA weight 4(?:\.0+)?\)", log)) == 3, log
+    alignments = [line for line in log.splitlines() if line.startswith("align ")]
+    for line in alignments:
+        arguments = shlex.split(line)
+        assert arguments[arguments.index("--matcha") + 1] == str(custom_matrix), line
+        assert float(arguments[arguments.index("--aa-weight") + 1]) == 4, line
+    for mode in ("--single-step-clustering", "--ungapped-tea-aa"):
+        value = 1 if mode == "--single-step-clustering" else 0
+        result = run(steam, "cluster", db, work / f"mode-{mode}", work / f"tmp-{mode}",
+                     mode, value, "-c", 0, "--threads", 2)
+        log = result.stdout + result.stderr
+        assert ("Combined TEA+AA ungapped diagonal scoring enabled" in log) == (value == 1), log
+        if value == 1:
+            assert "clusthash " not in log, log
+    for method in ("linclust", "easy-linclust"):
+        output = work / method
+        arguments = (inputs[1], inputs[0]) if method.startswith("easy") else (db,)
+        run(steam, method, *arguments, output, work / f"{method}-tmp", "--threads", 2)
+
+    # Force a stale, invalid cascaded assignment, then exercise the actual
+    # reassignment branch (including its merged paired target database).
+    reassign_tmp = work / "reassign-tmp"
+    run(steam, "cluster", db, work / "before-reassign", reassign_tmp,
+        "-c", 0, "--threads", 2)
+    cached = (reassign_tmp / "latest").resolve()
+    invalid = work / "invalid-clusters.tsv"
+    invalid.write_text("".join(f"0\t{i}\n" for i in range(16)))
+    run(steam, "tsv2db", invalid, cached / "clu", "--output-dbtype", 6)
+    reassigned = work / "reassigned"
+    result = run(steam, "cluster", db, reassigned, reassign_tmp, "-c", 0,
+                 "--cluster-reassign", 1, "--force-reuse", 1, "--threads", 2)
+    assert "seq_seeds.merged.keys" in result.stdout + result.stderr
+    assert (cached / "seq_seeds.merged_aa.dbtype").exists()
+    tsv = work / "reassigned.tsv"
+    run(steam, "createtsv", db, db, reassigned, tsv, "--threads", 2)
+    members = [line.split("\t")[1] for line in tsv.read_text().splitlines()]
+    assert len(members) == len(names) and set(members) == names, members
+
+    # Identical TEA strings must not bypass an AA-identity requirement through
+    # the upstream TEA-only clusthash shortcut.
+    aa_input, tea_input = work / "distinct-aa.fasta", work / "identical-tea.fasta"
+    rng = random.Random(123)
+    aa_input.write_text("".join(f">{name}\n{''.join(rng.choices('ACDEFGHIKLMNPQRSTVWY', k=128))}\n"
+                                for name in ("one", "two")))
+    letters = ''.join(rng.choices('ACDEFGHIKLMNPQRSTVWY', k=128))
+    tea_input.write_text(f">one\n{letters}\n>two\n{letters}\n")
+    run(steam, "createdb", tea_input, aa_input, work / "distinct", "--threads", 2)
+    run(steam, "cluster", work / "distinct", work / "distinct-clu", work / "distinct-tmp",
+        "--single-step-clustering", 1, "--min-seq-id", 0.99, "--threads", 2)
+    assert len(Path(str(work / "distinct-clu") + ".index").read_text().splitlines()) == 2
+
+    for k in (5, 6):
+        result = run(steam, "cluster", db, work / f"k{k}", work / f"k{k}-tmp",
+                     "-k", k, "--threads", 2)
+        assert f"STEAM k-mer selection: k={k}, pattern=" in result.stdout + result.stderr
 
 
 def main():

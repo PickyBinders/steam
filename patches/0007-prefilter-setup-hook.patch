@@ -1,0 +1,22 @@
+diff --git a/src/commons/Parameters.h b/src/commons/Parameters.h
+--- a/src/commons/Parameters.h
++++ b/src/commons/Parameters.h
+@@ -777,6 +777,7 @@
+     void setDefaults();
+     // Extension hook after clustering parameters have been parsed.
+     virtual void configureClustering(bool linear = false) { (void) linear; }
++    virtual void configurePrefilter() {}
+     void initMatrices();
+     void parseParameters(int argc, const char *pargv[], const Command &command, bool printPar, int parseFlags,
+                          int outputFlags);
+diff --git a/src/prefiltering/Main.cpp b/src/prefiltering/Main.cpp
+--- a/src/prefiltering/Main.cpp
++++ b/src/prefiltering/Main.cpp
+@@ -15,6 +15,7 @@
+ 
+     Parameters& par = Parameters::getInstance();
+     par.parseParameters(argc, argv, command, true, 0, MMseqsParameter::COMMAND_PREFILTER);
++    par.configurePrefilter();
+ 
+     Timer timer;
+     int queryDbType = FileUtil::parseDbType(par.db1.c_str());
