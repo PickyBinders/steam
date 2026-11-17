@@ -413,3 +413,15 @@ index 13d1a46..95c2376 100644
      size_t globalBucketThreshold;
  
      const static size_t SCORE_RANGE = 256;
+diff --git a/src/prefiltering/CacheFriendlyOperations.cpp b/src/prefiltering/CacheFriendlyOperations.cpp
+--- a/src/prefiltering/CacheFriendlyOperations.cpp
++++ b/src/prefiltering/CacheFriendlyOperations.cpp
+@@ -176,7 +176,7 @@ size_t CacheFriendlyOperations<BINSIZE>::mergeScoreDuplicates(CounterResult *output)
+             output[doubleElementCount].diagonal = element.diagonal;
+             // memory overflow can not happen since input array = output array
+             doubleElementCount += (UNLIKELY(duplicateBitArray[hashBinElement] != 0  ) ) ? 1 : 0;
+-            duplicateBitArray[hashBinElement] = static_cast<unsigned char>(binStartPos[n].diagonal);
++            duplicateBitArray[hashBinElement] = 0;
+         }
+     }
+     return doubleElementCount;

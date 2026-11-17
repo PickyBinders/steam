@@ -169,8 +169,8 @@ index 6293eb4a..6e37178f 100644
 +        const int alignmentCompBiasCorrection = par.compBiasCorrection;
          par.minDiagScoreThr = 0;
 -        par.diagonalScoring = 0;
-+        par.diagonalScoring = steamPrefilterSubMat() && getenv("STEAM_UNGAPPED_AA")
-+            && strcmp(getenv("STEAM_UNGAPPED_AA"), "0") != 0;
++        // Count-only screening first; score diagonals in a one-round cascade.
++        par.diagonalScoring = steamPrefilterSubMat() && par.clusterSteps == 1;
 +        if (steamPrefilterSubMat() && par.clusterSteps > 1) {
 +            par.maxResListLen = std::min(100, targetMaxResListLen);
 +        }

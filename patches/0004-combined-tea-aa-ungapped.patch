@@ -14,8 +14,8 @@ index 78bd087..51320fc 100644
          threads(static_cast<unsigned int>(par.threads)),
          compressed(par.compressed) {
      sameQTDB = isSameQTDB();
-+    externalAuxScoring = (getenv("STEAM_UNGAPPED_AA") != NULL &&
-+                          strcmp(getenv("STEAM_UNGAPPED_AA"), "0") != 0);
++    externalAuxScoring = diagonalScoring && getenv("STEAM_UNGAPPED_AA") != NULL &&
++                         strcmp(getenv("STEAM_UNGAPPED_AA"), "0") != 0;
 +    qdbrExternalAux = NULL;
 +    tdbrExternalAux = NULL;
 +    sequenceLookupExternalAux = NULL;
@@ -23,18 +23,6 @@ index 78bd087..51320fc 100644
      globalBucketThreshold = 0;
      bucketStatisticsReady = false;
      const char *bucketCoverage = getenv("STEAM_BUCKET_COVERAGE_PCT");
-@@ -69,6 +76,11 @@ Prefiltering::Prefiltering(const std::string &queryDB,
-         EXIT(EXIT_FAILURE);
-     }
- 
-+    if (externalAuxScoring && diagonalScoring == false) {
-+        Debug(Debug::ERROR) << "Combined TEA+AA ungapped scoring requires --diag-score 1\n";
-+        EXIT(EXIT_FAILURE);
-+    }
-+
-     // init the substitution matrices
-     switch (querySeqType & Parameters::DBTYPE_MASK) {
-         case Parameters::DBTYPE_NUCLEOTIDES:
 @@ -78,6 +90,7 @@ Prefiltering::Prefiltering(const std::string &queryDB,
              break;
          case Parameters::DBTYPE_AMINO_ACIDS:

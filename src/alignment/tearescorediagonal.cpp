@@ -114,8 +114,9 @@ static Matcher::result_t ungappedAlignTea(Sequence &qSeqAA, Sequence &qSeqTea,
         if (par.addBacktrace) {
             backtrace.append(diagLen, 'M');
         }
+        // Native Hamming mode filters identity and coverage, without an E-value.
         return Matcher::result_t(tSeqAA.getDbKey(), idCnt, queryCov, targetCov, seqId,
-                                  std::numeric_limits<double>::max(), diagLen,
+                                  0.0, diagLen,
                                   qOff, qOff + diagLen - 1, qSeqAA.L,
                                   tOff, tOff + diagLen - 1, tSeqAA.L, backtrace);
     }
