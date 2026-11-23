@@ -1,90 +1,164 @@
+diff --git a/src/prefiltering/Prefiltering.cpp b/src/prefiltering/Prefiltering.cpp
+index 92d957f..78bd087 100644
+--- a/src/prefiltering/Prefiltering.cpp
++++ b/src/prefiltering/Prefiltering.cpp
+@@ -13,6 +13,10 @@
+ #include "Parameters.h"
+ #include "MemoryMapped.h"
+ #include "FastSort.h"
++#include <cstdlib>
++#include <algorithm>
++#include <chrono>
++#include <vector>
+ #include <sys/mman.h>
+ 
+ #ifdef OPENMP
+@@ -56,6 +60,14 @@ Prefiltering::Prefiltering(const std::string &queryDB,
+         threads(static_cast<unsigned int>(par.threads)),
+         compressed(par.compressed) {
+     sameQTDB = isSameQTDB();
++    globalBucketThreshold = 0;
++    bucketStatisticsReady = false;
++    const char *bucketCoverage = getenv("STEAM_BUCKET_COVERAGE_PCT");
++    steamBucketCoveragePct = bucketCoverage != NULL ? atof(bucketCoverage) : 10.0;
++    if (steamBucketCoveragePct < 0.0 || steamBucketCoveragePct > 100.0) {
++        Debug(Debug::ERROR) << "STEAM_BUCKET_COVERAGE_PCT must be between 0 and 100\n";
++        EXIT(EXIT_FAILURE);
++    }
+ 
+     // init the substitution matrices
+     switch (querySeqType & Parameters::DBTYPE_MASK) {
+@@ -564,6 +576,65 @@ void Prefiltering::getIndexTable(int split, size_t dbFrom, size_t dbSize) {
+         tdbr->remapData();
+         Debug(Debug::INFO) << "Time for index table init: " << timer.lap() << "\n";
+     }
++    if (bucketStatisticsReady == false) {
++        setGlobalBucketThreshold(indexTable);
++    }
++}
++
++void Prefiltering::setGlobalBucketThreshold(IndexTable *counts) {
++    bucketStatisticsReady = true;
++    globalBucketThreshold = 0;
++    if (steamBucketCoveragePct <= 0.0) {
++        return;
++    }
++
++    const auto started = std::chrono::steady_clock::now();
++    const size_t tableSize = counts->getTableSize();
++    std::vector<size_t> bucketSizes;
++    bucketSizes.reserve(tableSize);
++    size_t totalEntries = 0;
++    for (size_t kmer = 0; kmer < tableSize; kmer++) {
++        const size_t bucketSize = counts->getOffset(kmer + 1) - counts->getOffset(kmer);
++        if (bucketSize > 0) {
++            bucketSizes.push_back(bucketSize);
++            totalEntries += bucketSize;
++        }
++    }
++    const auto scanned = std::chrono::steady_clock::now();
++    Debug(Debug::INFO) << "[steam-bucket-filter] sorting "
++                       << bucketSizes.size() << " non-empty buckets...\n";
++    std::sort(bucketSizes.begin(), bucketSizes.end(), std::greater<size_t>());
++    const auto sorted = std::chrono::steady_clock::now();
++    const size_t target = static_cast<size_t>(
++        totalEntries * steamBucketCoveragePct / 100.0);
++    size_t cumulative = 0;
++    for (size_t bucketSize : bucketSizes) {
++        cumulative += bucketSize;
++        if (cumulative >= target) {
++            globalBucketThreshold = bucketSize;
++            break;
++        }
++    }
++    const auto completed = std::chrono::steady_clock::now();
++    const size_t bucketFloor = 10;
++    if (globalBucketThreshold > 0 && globalBucketThreshold < bucketFloor) {
++        Debug(Debug::INFO) << "[steam-bucket-filter] threshold "
++                           << globalBucketThreshold << " below floor "
++                           << bucketFloor
++                           << " (distribution too uniform); filter disabled\n";
++        globalBucketThreshold = 0;
++    }
++    auto milliseconds = [](auto begin, auto end) {
++        return std::chrono::duration_cast<std::chrono::milliseconds>(
++            end - begin).count();
++    };
++    Debug(Debug::INFO) << "[steam-bucket-filter] global coverage="
++                       << steamBucketCoveragePct << "% -> bucket threshold "
++                       << globalBucketThreshold << " (entries=" << totalEntries
++                       << " non-empty-buckets=" << bucketSizes.size()
++                       << " scan=" << milliseconds(started, scanned) << "ms"
++                       << " sort=" << milliseconds(scanned, sorted) << "ms"
++                       << " cumsum=" << milliseconds(sorted, completed) << "ms)\n";
+ }
+ 
+ bool Prefiltering::isSameQTDB() {
+@@ -811,7 +882,8 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
+         QueryMatcher matcher(indexTable, sequenceLookup, kmerSubMat,  ungappedSubMat,
+                              kmerThr, kmerSize, dbSize, std::max(tdbr->getMaxSeqLen(),qdbr->getMaxSeqLen()), maxResListLen, aaBiasCorrection, aaBiasCorrectionScale,
+                              diagonalScoring, minDiagScoreThr, takeOnlyBestKmer, targetSeqType==Parameters::DBTYPE_NUCLEOTIDES,
+-                             ungappedSubMatAux, targetSeqType);
++                             ungappedSubMatAux, targetSeqType,
++                             globalBucketThreshold);
+ 
+         if (seq.profile_matrix != NULL) {
+             matcher.setProfileMatrix(seq.profile_matrix);
+diff --git a/src/prefiltering/Prefiltering.h b/src/prefiltering/Prefiltering.h
+index fa5830c..b03ca95 100644
+--- a/src/prefiltering/Prefiltering.h
++++ b/src/prefiltering/Prefiltering.h
+@@ -79,6 +79,9 @@ private:
+     ScoreMatrix _3merSubMatrix;
+     IndexTable *indexTable;
+     SequenceLookup *sequenceLookup;
++    size_t globalBucketThreshold;
++    double steamBucketCoveragePct;
++    bool bucketStatisticsReady;
+ 
+     // parameter
+     int splits;
+@@ -135,6 +138,7 @@ private:
+ 
+     // needed for index lookup
+     void getIndexTable(int split, size_t dbFrom, size_t dbSize);
++    void setGlobalBucketThreshold(IndexTable *counts);
+ 
+     void printStatistics(const statistics_t &stats, std::list<int> **reslens,
+                          unsigned int resLensSize, size_t empty, size_t maxResults);
 diff --git a/src/prefiltering/QueryMatcher.cpp b/src/prefiltering/QueryMatcher.cpp
-index 067e661c..4e6bbcfd 100644
+index 067e661..c746720 100644
 --- a/src/prefiltering/QueryMatcher.cpp
 +++ b/src/prefiltering/QueryMatcher.cpp
-@@ -2,6 +2,11 @@
- #include "QueryMatcher.h"
- #include "FastSort.h"
- #include "Util.h"
-+#include <algorithm>
-+#include <atomic>
-+#include <chrono>
-+#include <mutex>
-+#include <vector>
- 
- #define FE_1(WHAT, X) WHAT(X)
- #define FE_2(WHAT, X, ...) WHAT(X)FE_1(WHAT, __VA_ARGS__)
-@@ -241,6 +246,69 @@ std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned
+@@ -25,7 +25,8 @@ QueryMatcher::QueryMatcher(IndexTable *indexTable, SequenceLookup *sequenceLooku
+                            unsigned int maxSeqLen, size_t maxHitsPerQuery, bool aaBiasCorrection, float aaBiasCorrectionScale,
+                            bool diagonalScoring, unsigned int minDiagScoreThr, bool takeOnlyBestKmer, bool isNucleotide,
+                            BaseMatrix *ungappedAlignmentSubMatAux,
+-                           int targetSeqType)
++                           int targetSeqType,
++                           size_t globalBucketThreshold)
+         : idx(indexTable->getAlphabetSize(), kmerSize), isNucleotide(isNucleotide), hook(NULL)
+ {
+     this->kmerSubMat = kmerSubMat;
+@@ -64,6 +65,7 @@ QueryMatcher::QueryMatcher(IndexTable *indexTable, SequenceLookup *sequenceLooku
+     // needed for p-value calc.
+     ungappedAlignment = NULL;
+     ungappedAlignmentAux = NULL;
++    this->globalBucketThreshold = globalBucketThreshold;
+     if (diagonalScoring) {
+         // Look up remap tables from the Sequence registry (registered by downstream projects e.g. Foldseek)
+         const Sequence::SeqAuxInfo *auxInfo = Sequence::getAuxInfo(targetSeqType);
+@@ -241,6 +243,9 @@ std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned
  }
  
  size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
-+    // STEAM patch: skip query k-mer positions whose target bucket falls in
-+    // the top STEAM_BUCKET_COVERAGE_PCT %% of the index by cumulative entry
-+    // coverage. Dataset-invariant: same percentage works on any DB.
-+    // Default: 20 (on). Set STEAM_BUCKET_COVERAGE_PCT=0 to disable.
-+    static const double steamCoveragePct = []() {
-+        const char *env = getenv("STEAM_BUCKET_COVERAGE_PCT");
-+        return env ? atof(env) : 20.0;
-+    }();
-+    static std::atomic<size_t> steamCoverageThreshold{0};
-+    static std::once_flag steamCoverageOnce;
-+    size_t steamMaxBucket = 0;
-+    if (steamCoveragePct > 0.0) {
-+        std::call_once(steamCoverageOnce, [&]() {
-+            auto t0 = std::chrono::steady_clock::now();
-+            size_t tableSize = indexTable->getTableSize();
-+            std::vector<size_t> bucketSizes;
-+            bucketSizes.reserve(tableSize);
-+            size_t totalEntries = 0;
-+            size_t prev = indexTable->getOffset(0);
-+            for (size_t i = 1; i <= tableSize; i++) {
-+                size_t off = indexTable->getOffset(i);
-+                size_t sz = off - prev;
-+                if (sz > 0) {
-+                    bucketSizes.push_back(sz);
-+                    totalEntries += sz;
-+                }
-+                prev = off;
-+            }
-+            auto t_scan = std::chrono::steady_clock::now();
-+            Debug(Debug::INFO) << "[steam-bucket-filter] sorting "
-+                << bucketSizes.size() << " non-empty buckets...\n";
-+            std::sort(bucketSizes.begin(), bucketSizes.end(),
-+                      std::greater<size_t>());
-+            auto t_sort = std::chrono::steady_clock::now();
-+            size_t target = static_cast<size_t>(totalEntries * steamCoveragePct / 100.0);
-+            size_t cum = 0, threshold = 0;
-+            for (size_t s : bucketSizes) {
-+                cum += s;
-+                if (cum >= target) { threshold = s; break; }
-+            }
-+            auto t_done = std::chrono::steady_clock::now();
-+            auto ms = [](auto a, auto b) {
-+                return std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count();
-+            };
-+            const size_t kSteamBucketFloor = 10;
-+            if (threshold > 0 && threshold < kSteamBucketFloor) {
-+                Debug(Debug::INFO) << "[steam-bucket-filter] threshold "
-+                    << threshold << " below floor " << kSteamBucketFloor
-+                    << " (distribution too uniform); filter disabled\n";
-+                threshold = 0;
-+            }
-+            steamCoverageThreshold.store(threshold, std::memory_order_release);
-+            Debug(Debug::INFO) << "[steam-bucket-filter] coverage="
-+                << steamCoveragePct << "% -> bucket threshold " << threshold
-+                << " (entries=" << totalEntries
-+                << " non-empty-buckets=" << bucketSizes.size()
-+                << " scan=" << ms(t0, t_scan) << "ms"
-+                << " sort=" << ms(t_scan, t_sort) << "ms"
-+                << " cumsum=" << ms(t_sort, t_done) << "ms)\n";
-+        });
-+        steamMaxBucket = steamCoverageThreshold.load(std::memory_order_acquire);
-+    }
++    // Prefiltering computes the threshold once for this target database.
++    const size_t steamMaxBucket = globalBucketThreshold;
 +    size_t steamSkippedKmers = 0;
      // go through the query sequence
      size_t kmerListLen = 0;
      size_t numMatches = 0;
-@@ -295,6 +363,10 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
+@@ -295,6 +300,10 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
  
          for (unsigned int kmerPos = 0; kmerPos < kmerElementSize; kmerPos++) {
              const IndexEntryLocal *entries = indexTable->getDBSeqList(index[kmerPos], &seqListSize);
@@ -95,7 +169,7 @@ index 067e661c..4e6bbcfd 100644
              // DEBUG
              //std::cout << seq->getDbKey() << std::endl;
              //idx.printKmer(index[kmerPos], kmerSize, kmerSubMat->num2aa);
-@@ -372,6 +444,9 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
+@@ -372,6 +381,9 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
      stats->querySeqLen = seq->L;
      stats->dbMatches   = overflowNumMatches + numMatches;
  
@@ -105,3 +179,26 @@ index 067e661c..4e6bbcfd 100644
      return hitCount;
  }
  
+diff --git a/src/prefiltering/QueryMatcher.h b/src/prefiltering/QueryMatcher.h
+index ed8d0ad..0de45d4 100644
+--- a/src/prefiltering/QueryMatcher.h
++++ b/src/prefiltering/QueryMatcher.h
+@@ -58,7 +58,8 @@ public:
+                  size_t maxHitsPerQuery, bool aaBiasCorrection, float aaBiasCorrectionScale, bool diagonalScoringMode,
+                  unsigned int minDiagScoreThr, bool takeOnlyBestKmer, bool isNucleotide,
+                  BaseMatrix *ungappedAlignmentSubMatAux = NULL,
+-                 int targetSeqType = 0);
++                 int targetSeqType = 0,
++                 size_t globalBucketThreshold = 0);
+     ~QueryMatcher();
+ 
+     // returns result for the sequence
+@@ -201,6 +202,8 @@ protected:
+ 
+     bool isNucleotide;
+ 
++    size_t globalBucketThreshold;
++
+     const static size_t SCORE_RANGE = 256;
+ 
+     QueryMatcherHook* hook;

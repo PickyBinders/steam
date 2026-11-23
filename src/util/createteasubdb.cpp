@@ -24,6 +24,7 @@ int createteasubdb(int argc, const char **argv, const Command &command) {
     cmd.addVariable("CREATESUBDB1_PAR", par.createParameterString(par.createsubdb).c_str());
     par.dbIdMode = 0;
     cmd.addVariable("CREATESUBDB2_PAR", par.createParameterString(par.createsubdb).c_str());
+    cmd.addVariable("DIVERSITY_PAR", par.createParameterString(par.computediversity).c_str());
     cmd.execProgram(FileUtil::getRealPathFromSymLink(program).c_str(), par.filenames);
 
     assert(false);

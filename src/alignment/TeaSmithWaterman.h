@@ -38,6 +38,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
 
 #if !defined(__APPLE__) && !defined(__llvm__)
 #include <malloc.h>
@@ -173,6 +174,7 @@ public:
     int isProfileSearch(){
         return profile->isProfile;
     }
+
 
     const static unsigned int SUBSTITUTIONMATRIX = 1;
     const static unsigned int PROFILE = 2;

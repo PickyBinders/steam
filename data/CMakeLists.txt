@@ -5,6 +5,7 @@ set(COMPILED_RESOURCES
         easyteasearch.sh
         createteasubdb.sh
         easyteacluster.sh
+        seed_markov.txt
         matcha.out
         )
 

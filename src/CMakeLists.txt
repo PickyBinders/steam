@@ -23,3 +23,8 @@ mmseqs_setup_derived_target(steam steam-framework)
 target_link_libraries(mmseqs-framework version)
 target_link_libraries(steam version)
 install(TARGETS steam DESTINATION bin)
+
+# Explicit diagnostic target; not installed or built during ordinary builds.
+add_executable(steam_dump_matrix EXCLUDE_FROM_ALL ../tests/dump_matrix.cpp)
+mmseqs_setup_derived_target(steam_dump_matrix)
+target_link_libraries(steam_dump_matrix version)

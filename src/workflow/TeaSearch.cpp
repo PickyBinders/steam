@@ -1,29 +1,46 @@
 #include "LocalParameters.h"
 #include "FileUtil.h"
 #include "CommandCaller.h"
-#include "Util.h"
 #include "Debug.h"
+#include "IndexReader.h"
 
 #include "teasearch.sh.h"
 
 static void teaSearchDefault(LocalParameters &par) {
-        par.compBiasCorrectionScale = 0.5;
+        par.compBiasCorrectionScale = 0.0;
         par.maskMode = 0;
+        par.kmerSize = 0;
+        par.spacedKmerPattern = "";
     }
+
 
 int teasearch(int argc, const char **argv, const Command &command) {
     LocalParameters &par = LocalParameters::getLocalInstance();
-    par.parseParameters(argc, argv, command, true, 0, 0);
     teaSearchDefault(par);
+    par.parseParameters(argc, argv, command, true, 0, 0);
 
     if (par.teaMatrixFile.empty()) {
         Debug(Debug::ERROR) << "--matcha is required for steam search\n";
         EXIT(EXIT_FAILURE);
     }
-    if (par.ungappedTeaAa && par.exhaustiveSearch) {
-        Debug(Debug::ERROR) << "--ungapped-tea-aa is not supported together with --exhaustive-search\n";
+    for (int db = 0; db < 2; ++db) {
+        const std::string sequenceDb = PrefilteringIndexReader::dbPathWithoutIndex(par.filenames[db]);
+        if (!Parameters::isEqualDbtype(FileUtil::parseDbType(sequenceDb.c_str()),
+                                      Parameters::DBTYPE_AMINO_ACIDS)) {
+            Debug(Debug::ERROR) << "STEAM search requires paired sequence databases\n";
+            EXIT(EXIT_FAILURE);
+        }
+    }
+    par.validateCalibration();
+    par.resolveKmerPattern(par.filenames[1]);
+    if (!par.PARAM_SEED_PATTERN.wasSet) par.seedPattern = par.spacedKmerPattern;
+    if (par.seedCorrection && par.seedPattern != par.spacedKmerPattern) {
+        Debug(Debug::ERROR) << "Alignment and prefilter seed patterns must agree\n";
         EXIT(EXIT_FAILURE);
     }
+    // Exhaustive alignment bypasses candidate selection, not final score terms.
+    const bool combinedUngapped = par.ungappedTeaAa && !par.exhaustiveSearch;
+    par.configureUngappedScoring(combinedUngapped);
 
     std::string tmpDir = par.filenames.back();
     par.filenames.pop_back();
@@ -40,33 +57,20 @@ int teasearch(int argc, const char **argv, const Command &command) {
     cmd.addVariable("VERBOSITY", par.createParameterString(par.onlyverbosity).c_str());
 
     // Override --sub-mat with --matcha for prefiltering (TEA k-mer matching)
-    // Use lower comp bias scale for prefilter (matching foldseek)
+    // Exact seeds and combined AA+TEA diagonal scoring need no profile bias.
     auto origScoringMatrixFile = par.scoringMatrixFile;
+    const float alignmentCompBiasCorrectionScale = par.compBiasCorrectionScale;
     par.scoringMatrixFile = MultiParam<NuclAA<std::string>>(NuclAA<std::string>(par.teaMatrixFile, par.teaMatrixFile));
+    par.compBiasCorrectionScale = 0.0;
     cmd.addVariable("PREFILTER_PAR", par.createParameterString(par.teaprefilter).c_str());
-    cmd.addVariable("STEAM_UNGAPPED_AA", par.ungappedTeaAa ? "1" : NULL);
-    cmd.addVariable("STEAM_UNGAPPED_AA_SUBMAT",
-                    par.ungappedTeaAa ? origScoringMatrixFile.values.aminoacid().c_str() : NULL);
-    const std::string aaWeight = SSTR(par.teaWeight);
-    cmd.addVariable("STEAM_UNGAPPED_AA_WEIGHT", par.ungappedTeaAa ? aaWeight.c_str() : NULL);
 
-    // Exhaustive search: mirror mmseqs2's Search.cpp logic.
-    // teasearch.sh's fake_pref creates a synthetic prefilter that pairs every
-    // query with every target, so the k-mer prefilter is bypassed entirely.
-    // We still adjust covMode / maxResListLen / evalThr the same way mmseqs
-    // does so alignment-stage filtering behaves correctly on the all-pairs
-    // input.
-    if (par.exhaustiveSearch) {
-        const size_t queryDbSize  = FileUtil::countLines(par.db1Index.c_str());
-        const size_t targetDbSize = FileUtil::countLines(par.db2Index.c_str());
-        par.covMode = Util::swapCoverageMode(par.covMode);
-        par.maxResListLen = std::max((size_t)300, queryDbSize);
-        par.evalThr *= ((float) queryDbSize) / targetDbSize;
-    }
+    // Unlike MMseqs' transposed exhaustive workflow, the exhaustive path retain query
+    // and target orientation. Keep coverage modes and the user's E cutoff.
 
     // Restore original --sub-mat so rescorediagonal and alignment use the AA matrix (e.g. BLOSUM62),
     // not the TEA matrix, for the amino acid scoring component
     par.scoringMatrixFile = origScoringMatrixFile;
+    par.compBiasCorrectionScale = alignmentCompBiasCorrectionScale;
 
     // Gapped alignment uses the user's E-value threshold
     cmd.addVariable("ALIGNMENT_PAR", par.createParameterString(par.teaalign).c_str());

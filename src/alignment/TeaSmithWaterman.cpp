@@ -260,7 +260,13 @@ void TeaSmithWaterman::createQueryProfile(simd_int *profile, const int8_t *query
                 // if will be optmized out by compiler
                 if(type == SUBSTITUTIONMATRIX) {     // substitution score for query_seq constrained by nt
                     // query_sequence starts from 1 to n
-                    *t++ = ( j >= query_length) ? bias : mat[nt * aaSize + query_sequence[j + offset ]] + composition_bias[j + offset] + bias; // mat[nt][q[j]] mat eq 20*20
+                    if (j >= query_length) {
+                        *t++ = bias;
+                    } else {
+                        const int32_t queryPos = j + offset;
+                        int32_t score = mat[nt * aaSize + query_sequence[queryPos]];
+                        *t++ = score + composition_bias[queryPos] + bias;
+                    }
 //					printf("(%1d, %1d) ", query_sequence[j ], *(t-1));
 
                 } if(type == PROFILE || type == PROFILE_HMM) {
@@ -1564,12 +1570,16 @@ void TeaSmithWaterman::ssw_init(Sequence* q_aa,
     const int32_t alphabetSize = m->alphabetSize;
     int32_t compositionBias = 0;
     if (aaBiasCorrection && Parameters::isEqualDbtype(q_tea->getSeqType(), Parameters::DBTYPE_AMINO_ACIDS)) {
-        SubstitutionMatrix::calcLocalAaBiasCorrection(m, q_aa->numSequence, q_aa->L, tmp_composition_bias, 1.0);
+        SubstitutionMatrix::calcLocalAaBiasCorrection(subMatAA, q_aa->numSequence, q_aa->L,
+                                                      tmp_composition_bias, 1.0);
         for (int i =0; i < q_aa->L; i++) {
             profile->composition_bias_aa[i] = (int8_t) (tmp_composition_bias[i] < 0.0) ? tmp_composition_bias[i] - 0.5 : tmp_composition_bias[i] + 0.5;
             compositionBias = (compositionBias < profile->composition_bias_aa[i]) ? compositionBias : profile->composition_bias_aa[i];
         }
-        SubstitutionMatrix::calcLocalAaBiasCorrection(m, q_tea->numSequence, q_tea->L, tmp_composition_bias, aaBiasCorrectionScale);
+        // TEA labels are an arbitrary bijection. Use the TEA matrix and its
+        // matched background so correction is invariant to relabeling.
+        SubstitutionMatrix::calcLocalAaBiasCorrection(subMatTea, q_tea->numSequence, q_tea->L,
+                                                      tmp_composition_bias, aaBiasCorrectionScale);
         for (int i =0; i < q_aa->L; i++) {
             profile->composition_bias_tea[i] = (int8_t) (tmp_composition_bias[i] < 0.0) ? tmp_composition_bias[i] - 0.5 : tmp_composition_bias[i] + 0.5;
             compositionBias = (compositionBias < profile->composition_bias_tea[i]) ? compositionBias : profile->composition_bias_tea[i];
@@ -1832,8 +1842,9 @@ TeaSmithWaterman::cigar * TeaSmithWaterman::banded_sw(const unsigned char *db_aa
                 f1 = f > 0 ? f : 0;
                 temp1 = e1 > f1 ? e1 : f1;
                 if(type == SUBSTITUTIONMATRIX){
+                    int32_t teaScore = mat_tea[query_tea_sequence[i] * ntea + db_tea_sequence[j]];
                     temp2 = h_b[d] + mat_aa[query_aa_sequence[i] * nAA + db_aa_sequence[j]] + compositionBiasAA[i]
-                            + mat_tea[query_tea_sequence[i] * ntea + db_tea_sequence[j]] + compositionBiasSS[i];
+                            + teaScore + compositionBiasSS[i];
                 }
                 if(type == PROFILE || type == PROFILE_HMM) {
                     temp2 = h_b[d] + mat_aa[db_aa_sequence[j] * nAA + (queryStart + i)]

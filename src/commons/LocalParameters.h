@@ -22,21 +22,37 @@ public:
 
     // TEA-specific parameters
     float teaWeight;
+    float teaScale;
     std::string teaMatrixFile;
     float loglinearM;
+    float loglinearMHigh;
+    float loglinearBreakpoint;
     float loglinearC;
     float pFP;
     bool ungappedTeaAa;
+    bool seedCorrection;
+    std::string seedModelFile;
+    std::string seedPattern;
+    float minTfident;
 
     PARAMETER(PARAM_TEA_WEIGHT)
     PARAMETER(PARAM_TEA_MAT)
+    PARAMETER(PARAM_TEA_SCALE)
     PARAMETER(PARAM_LOGLINEAR_M)
+    PARAMETER(PARAM_LOGLINEAR_M_HIGH)
+    PARAMETER(PARAM_LOGLINEAR_BREAKPOINT)
     PARAMETER(PARAM_LOGLINEAR_C)
     PARAMETER(PARAM_P_FP)
     PARAMETER(PARAM_UNGAPPED_TEA_AA)
+    PARAMETER(PARAM_SEED_CORRECTION)
+    PARAMETER(PARAM_SEED_MODEL)
+    PARAMETER(PARAM_SEED_PATTERN)
+    PARAMETER(PARAM_MIN_TFIDENT)
 
     // Parameter vectors for TEA commands
     std::vector<MMseqsParameter*> createteadb;
+    std::vector<MMseqsParameter*> computediversity;
+    std::vector<MMseqsParameter*> createteasubdb;
     std::vector<MMseqsParameter*> teaalign;
     std::vector<MMseqsParameter*> tearescorediagonal;
     std::vector<MMseqsParameter*> teaprefilter;
@@ -46,6 +62,11 @@ public:
     std::vector<MMseqsParameter*> easyteasearchworkflow;
 
     LocalParameters();
+    bool validateCalibration();
+    void configurePrefilter() override;
+    void configureUngappedScoring(bool combined);
+    void configureClustering(bool linear = false) override;
+    void resolveKmerPattern(const std::string &targetDb);
 
 private:
     LocalParameters(const LocalParameters&);

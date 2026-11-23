@@ -1,17 +1,30 @@
 #include "FileUtil.h"
 #include "DBWriter.h"
+#include "DBReader.h"
 #include "Debug.h"
 #include "Util.h"
 #include "KSeqWrapper.h"
 #include "LocalParameters.h"
+#include "DatabaseDiversity.h"
 
 #include <string>
+#include <cstdlib>
 
-// Strip tea_convert entropy suffix ("|H=0.123") from header name
-static std::string stripEntropySuffix(const char *name, size_t len) {
+// Strip only trailing numeric TH/TL fields; source accessions may
+// themselves contain pipes. AA headers need not carry TEA confidence.
+static std::string stripConfidenceSuffix(const char *name, size_t len) {
     std::string s(name, len);
-    size_t pos = s.find("|H=");
-    if (pos != std::string::npos) {
+    while (true) {
+        size_t pos = s.rfind('|');
+        if (pos == std::string::npos) break;
+        std::string field = s.substr(pos + 1);
+        size_t offset = field.compare(0, 3, "TH=") == 0 ? 3 :
+                        field.compare(0, 3, "TL=") == 0 ? 3 : 0;
+        if (offset == 0) break;
+        const char *value = field.c_str() + offset;
+        char *end = NULL;
+        std::strtod(value, &end);
+        if (end == value || *end != '\0') break;
         s.erase(pos);
     }
     return s;
@@ -64,7 +77,7 @@ int createteadb(int argc, const char **argv, const Command &command) {
         const KSeqWrapper::KSeqEntry &teaEntry = teaReader->entry;
         const KSeqWrapper::KSeqEntry &aaEntry = aaReader->entry;
 
-        std::string teaName = stripEntropySuffix(teaEntry.name.s, teaEntry.name.l);
+        std::string teaName = stripConfidenceSuffix(teaEntry.name.s, teaEntry.name.l);
         std::string aaName(aaEntry.name.s, aaEntry.name.l);
 
         if (teaName != aaName) {
@@ -93,8 +106,8 @@ int createteadb(int argc, const char **argv, const Command &command) {
         aaSeq.push_back('\n');
         aaWriter.writeData(aaSeq.c_str(), aaSeq.length(), id, 0);
 
-        // Write header (use stripped TEA name)
-        std::string header = teaName;
+        // Preserve confidence metadata, but pair and index by clean accession.
+        std::string header(teaEntry.name.s, teaEntry.name.l);
         if (teaEntry.comment.l > 0) {
             header.append(" ");
             header.append(teaEntry.comment.s, teaEntry.comment.l);
@@ -103,7 +116,7 @@ int createteadb(int argc, const char **argv, const Command &command) {
         hdrWriter.writeData(header.c_str(), header.length(), id, 0);
 
         // Write lookup entry
-        std::string accession = Util::parseFastaHeader(header.c_str());
+        std::string accession = Util::parseFastaHeader(teaName.c_str());
         fprintf(lookupFp, "%u\t%s\t0\n", id, accession.c_str());
 
         id++;
@@ -125,6 +138,36 @@ int createteadb(int argc, const char **argv, const Command &command) {
     hdrWriter.close(true);
     aaWriter.close(true);
     teaWriter.close(true);
+
+    // Compute a fixed, search-parameter-independent database diversity summary
+    // automatically at creation time.  The native DB is already in the page
+    // cache, and the C++ implementation scans it in parallel without any
+    // clustering or retained per-sequence sketches.
+    DatabaseDiversityMetadata diversity;
+    std::string diversityError;
+    bool diversityOk = DatabaseDiversity::compute(
+        outDB, par.threads, diversity, diversityError
+    );
+    if (diversityOk && diversity.sequences != written) {
+        diversityError = "metadata/database sequence-count mismatch";
+        diversityOk = false;
+    }
+    if (diversityOk) {
+        diversityOk = DatabaseDiversity::write(outDB, diversity, diversityError);
+    }
+    if (!diversityOk) {
+        Debug(Debug::ERROR) << "Database diversity failed: " << diversityError << "\n";
+        EXIT(EXIT_FAILURE);
+    }
+    Debug(Debug::INFO)
+        << "Database diversity: method=" << diversity.method
+        << " effective_targets=" << diversity.effectiveTargets
+        << " metadata=" << DatabaseDiversity::metadataPath(outDB) << "\n";
+
+    // Both alphabets share IDs; expose the same headers/lookup so native
+    // sequence utilities can also read the companion AA database directly.
+    DBReader<unsigned int>::softlinkDb(outDB, aaSeqDataFile,
+            (DBFiles::Files) (DBFiles::HEADERS | DBFiles::LOOKUP));
 
     delete teaReader;
     delete aaReader;

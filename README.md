@@ -19,7 +19,7 @@ See [the preprint](https://doi.org/10.1101/2025.11.27.690975) to learn more.
 mamba install -c conda-forge cmake gxx_linux-64
 
 # Build
-git clone --recursive https://github.com/PickyBinders/steam.git
+git clone --branch dev --recursive https://github.com/PickyBinders/steam.git
 cd steam
 mkdir build && cd build
 cmake -DCMAKE_BUILD_TYPE=Release ..
@@ -52,14 +52,19 @@ Useful flags:
 
 | Flag | Default | Notes |
 |-----------|---------|-------------|
-| `-e` | 100 | E-value threshold |
+| `-e` | 0.01 | E-value threshold |
 | `--max-seqs` | 2000 | Maximum results per query from prefiltering |
-| `--ungapped-tea-aa` | 0 | Rank double-hit candidates by combined TEA+AA ungapped score before `--max-seqs` |
 | `--min-seq-id` | 0 | Minimum **amino acid** sequence identity |
 
 ### 3. Cluster
 
 `easy-cluster` runs cascaded clustering (sensitive) and `easy-linclust` runs linear-time clustering (faster, less sensitive). Both take paired TEA/AA FASTAs:
+
+Cascaded clustering ranks prefilter candidates by combined TEA+AA ungapped
+scores, retaining at most 100, 200, and `--max-seqs` candidates in its three
+stages (final default: 1000). Smaller explicit limits are respected at every
+stage. Single-step clustering uses the final limit directly. Clustering uses
+300 sampled k-mers per sequence by default.
 
 ```bash
 # Cascaded clustering
@@ -80,11 +85,12 @@ Useful flags:
 | Flag | Default | Notes |
 |---|---|---|
 | `--min-seq-id` | 0 | Minimum **amino acid** sequence identity for cluster members |
+| `--min-tfident` | 0 | Minimum **TEA** identity across aligned columns (0–1); can be combined with `--min-seq-id`. A positive value selects single-step clustering by default so members satisfy the cutoff. |
 | `-c` | 0.8 | Minimum coverage |
 | `-e` | 0.01 | E-value threshold |
 | `--cov-mode` | 0 | 0=bidirectional, 1=target, 2=query |
 | `--cluster-reassign` | off | Cascaded only: corrects criteria-violations from cascaded merging |
-| `--single-step-cluster` | off | Cascaded only: skip cascading, single pass |
+| `--single-step-clustering` | off | Cascaded only: skip cascading, single pass |
 
 ## Commands
 
@@ -94,7 +100,9 @@ Useful flags:
 | `easy-cluster` | Cluster paired TEA/AA FASTAs (cascaded, sensitive) |
 | `easy-linclust` | Cluster paired TEA/AA FASTAs (linear-time, faster) |
 | `createdb` | Create a STEAM database from paired TEA/AA FASTA files |
+| `computediversity` | Compute or refresh fixed MinHash metadata for an existing paired database |
 | `search` | Search pre-built databases (faster for repeated searches) |
+| `prefilter` | Generate native candidate rows directly |
 | `cluster` | Cluster a pre-built database (cascaded) |
 | `linclust` | Cluster a pre-built database (linear-time) |
 | `convertalis` | Convert alignment results to various output formats |
@@ -140,20 +148,55 @@ Standard MMseqs2 output columns (`fident`, `alnlen`, `qcov`, `tcov`, `evalue`, `
 
 The alignment score at each position is the sum of:
 
-- **MATCHA score**: substitution score from the TEA alphabet matrix
-- **AA score**: BLOSUM62 substitution score, weighted by `--aa-weight` (default 1.4)
+- **MATCHA score**: substitution score from the bundled simple EBA-count TEA matrix, scaled by `--tea-scale` (default 2 for this half-bit matrix)
+- **AA score**: BLOSUM62 substitution score, weighted by `--aa-weight` (default 3)
 
-By default, prefilter candidates are ranked using TEA-only ungapped diagonal
-scores. Pass `--ungapped-tea-aa 1` to use the same combined MATCHA + weighted
-AA score for ungapped ranking before the `--max-seqs` cutoff. K-mer matching
-still uses TEA sequences.
+By default, prefilter candidates are ranked using the combined MATCHA +
+weighted AA ungapped diagonal score before the `--max-seqs` cutoff. Pass
+`--ungapped-tea-aa 0` for TEA-only ungapped ranking. K-mer matching still uses
+TEA sequences.
+
+Standalone `steam prefilter queryDB targetDB resultDB` uses the same setup:
+the TEA matrix (`--matcha`), paired AA scoring (`--aa-weight`), and automatic
+k-mer/pattern selection. `--sub-mat` selects the AA matrix, as in `search`.
+
+For an exported TEA matrix, verify the native loaded integers before searching:
+
+```bash
+cmake --build build --target steam_dump_matrix
+build/src/steam_dump_matrix tea.out 2
+```
+After alignment traceback, the score becomes $floor(S*(1+e)+0.5)$, where `e` is the mean Markov rarity weight of distinct query TEA words supported by gap-free seven-column seed spans.
 
 ## E-value computation
 
-STEAM uses a log-linear E-value model following [Edgar & Sahakyan (2025)](https://doi.org/10.1101/2025.07.17.665375). E-values are computed as:
+STEAM uses a continuous piecewise-loglinear E-value model fitted to the
+empirical false-positive score tail. E-values are computed as:
 
 ```
-E(s) = (H/Q) * 10^(m*s + c)
+E(s) = D_target * 10^(c + m_low*s + (m_high-m_low)*max(0, s-b))
 ```
 
-where `s` is the raw alignment score, `H/Q` is the average number of reported hits per query (computed at runtime from prefilter results), and `m` and `c` are parameters fitted on SCOP40c.
+where `s` is the final corrected score, `D_target` is the complete target
+database's AA3+TEA5 MinHash effective target count, and `b` is the fitted
+score breakpoint.
+
+The selected coefficients are:
+
+```text
+m_low = -0.005633978159801299
+m_high = -0.0014312498238873948
+c = 0.2839183138420103
+b = 586
+```
+
+### Legacy TEA
+
+Pass the legacy matrix and gap, and disable the seed correction. For example:
+
+```bash
+steam easy-search query_tea.fasta query_aa.fasta targetDB result.m8 tmp \\
+  --matcha legacy_matrix.out --seed-correction 0 \\
+  --tea-scale 1 --aa-weight 1.4 --gap-open 14 --gap-extend 2 \\
+  --comp-bias-corr 0 --ungapped-tea-aa 0 -e inf
+```

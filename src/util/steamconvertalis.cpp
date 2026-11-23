@@ -295,24 +295,18 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
         }
     }
 
-    int gapOpen, gapExtend;
     SubstitutionMatrix * subMat= NULL;
     if (targetNucs == true && queryNucs == true && isTranslatedSearch == false) {
         subMat = new NucleotideMatrix(par.scoringMatrixFile.values.nucleotide().c_str(), 1.0, 0.0);
-        gapOpen = par.gapOpen.values.nucleotide();
-        gapExtend =  par.gapExtend.values.nucleotide();
     }else{
         subMat = new SubstitutionMatrix(par.scoringMatrixFile.values.aminoacid().c_str(), 2.0, 0.0);
-        gapOpen = par.gapOpen.values.aminoacid();
-        gapExtend = par.gapExtend.values.aminoacid();
     }
-    EvalueComputation *evaluer = NULL;
+    // STEAM stores raw scores and its own E-values; conversion needs no AA calibration.
     bool queryProfile = false;
     bool targetProfile = false;
     if (needSequenceDB) {
         queryProfile = Parameters::isEqualDbtype(qDbr.sequenceReader->getDbtype(), Parameters::DBTYPE_HMM_PROFILE);
         targetProfile = Parameters::isEqualDbtype(tDbr->sequenceReader->getDbtype(), Parameters::DBTYPE_HMM_PROFILE);
-        evaluer = new EvalueComputation(tDbr->sequenceReader->getAminoAcidDBSize(), subMat, gapOpen, gapExtend);
     }
 
     DBReader<unsigned int> alnDbr(par.db3.c_str(), par.db3Index.c_str(), par.threads, DBReader<unsigned int>::USE_INDEX|DBReader<unsigned int>::USE_DATA);
@@ -1008,9 +1002,6 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
             delete tAaDbr;
         }
         delete qAaDbr;
-    }
-    if (needSequenceDB) {
-        delete evaluer;
     }
     delete subMat;
 
