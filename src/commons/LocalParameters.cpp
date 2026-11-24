@@ -8,6 +8,39 @@
 #include <cmath>
 #include <iostream>
 
+std::vector<int> LocalParameters::getTeaOutputFormat(int format, const std::string &outfmt,
+        bool &needSequences, bool &needBacktrace, bool &needFullHeaders,
+        bool &needLookup, bool &needSource, bool &needTaxonomyMapping, bool &needTaxonomy) {
+    std::string baseFormat = outfmt;
+    std::vector<std::pair<size_t, int>> teaColumns;
+    if (format != FORMAT_ALIGNMENT_SAM && format != FORMAT_ALIGNMENT_HTML) {
+        const auto tokens = Util::split(outfmt, ",");
+        baseFormat.clear();
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            const auto &token = tokens[i];
+            int code = -1;
+            if (token == "tfident") code = OUTFMT_TFIDENT;
+            else if (token == "tpident") code = OUTFMT_TPIDENT;
+            else if (token == "qteaseq") code = OUTFMT_QTEASEQ;
+            else if (token == "tteaseq") code = OUTFMT_TTEASEQ;
+            else if (token == "qteaaln") code = OUTFMT_QTEAALN;
+            else if (token == "tteaaln") code = OUTFMT_TTEAALN;
+
+            if (i != 0) baseFormat += ',';
+            baseFormat += code < 0 ? token : "empty";
+            if (code >= 0) teaColumns.emplace_back(i, code);
+        }
+    }
+    auto codes = getOutputFormat(format, baseFormat, needSequences, needBacktrace,
+            needFullHeaders, needLookup, needSource, needTaxonomyMapping, needTaxonomy);
+    for (const auto &column : teaColumns) {
+        codes[column.first] = column.second;
+        needSequences = true;
+        needBacktrace |= column.second != OUTFMT_QTEASEQ && column.second != OUTFMT_TTEASEQ;
+    }
+    return codes;
+}
+
 LocalParameters::LocalParameters() :
         Parameters(),
         PARAM_TEA_WEIGHT(PARAM_TEA_WEIGHT_ID, "--aa-weight", "AA weight",

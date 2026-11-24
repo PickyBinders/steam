@@ -1,0 +1,35 @@
+diff --git a/src/prefiltering/Prefiltering.cpp b/src/prefiltering/Prefiltering.cpp
+--- a/src/prefiltering/Prefiltering.cpp
++++ b/src/prefiltering/Prefiltering.cpp
+@@ -685,13 +685,29 @@
+     }
+ 
+     Timer timer;
+-    Debug(Debug::INFO)
+-        << "STEAM split invariance: counting exact k-mers across the complete target database\n";
+     const int countAlphabetSize = (
+         Parameters::isEqualDbtype(targetSeqType, Parameters::DBTYPE_NUCLEOTIDES)
+         || Parameters::isEqualDbtype(targetSeqType, Parameters::DBTYPE_AMINO_ACIDS))
+         ? alphabetSize - 1 : alphabetSize;
+     globalKmerCountTable = new IndexTable(countAlphabetSize, kmerSize, false);
++    if (templateDBIsIndex) {
++        Debug(Debug::INFO)
++            << "STEAM split invariance: summing k-mer bucket sizes across target index splits\n";
++        size_t *counts = globalKmerCountTable->getOffsets();
++        for (int split = 0; split < splits; ++split) {
++            IndexTable *table = PrefilteringIndexReader::getIndexTable(split, tidxdbr, Parameters::PRELOAD_MODE_MMAP);
++            const size_t *offsets = table->getOffsets();
++            for (size_t kmer = 0; kmer < table->getTableSize(); ++kmer) {
++                counts[kmer] += offsets[kmer + 1] - offsets[kmer];
++            }
++            delete table;
++        }
++        setGlobalBucketThreshold(globalKmerCountTable, true);
++        Debug(Debug::INFO) << "Time for complete-target k-mer statistics: " << timer.lap() << "\n";
++        return;
++    }
++    Debug(Debug::INFO)
++        << "STEAM split invariance: counting exact k-mers across the complete target database\n";
+     Sequence tseq(maxSeqLen, targetSeqType, kmerSubMat, kmerSize, spacedKmer,
+                   aaBiasCorrection, true, spacedKmerPattern);
+     SequenceLookup *unusedLookup = NULL;

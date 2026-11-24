@@ -19,6 +19,15 @@ int easyteasearch(int argc, const char **argv, const Command &command) {
 
     par.validateCalibration();
 
+    bool needSequences = false, needBacktrace = false, needFullHeaders = false;
+    bool needLookup = false, needSource = false, needTaxonomyMapping = false, needTaxonomy = false;
+    LocalParameters::getTeaOutputFormat(par.formatAlignmentMode, par.outfmt, needSequences,
+            needBacktrace, needFullHeaders, needLookup, needSource, needTaxonomyMapping, needTaxonomy);
+    if (needBacktrace) {
+        par.addBacktrace = true;
+        par.PARAM_ADD_BACKTRACE.wasSet = true;
+    }
+
     std::string tmpDir = par.filenames.back();
     std::string hash = SSTR(par.hashParameter(command.databases, par.filenames, par.teasearchworkflow));
     if (par.reuseLatest) {

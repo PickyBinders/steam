@@ -1,0 +1,74 @@
+diff --git a/src/prefiltering/CacheFriendlyOperations.cpp b/src/prefiltering/CacheFriendlyOperations.cpp
+--- a/src/prefiltering/CacheFriendlyOperations.cpp
++++ b/src/prefiltering/CacheFriendlyOperations.cpp
+@@ -9,9 +9,9 @@
+     size_t size = pow(2, ceil(log(maxElement)/log(2)));
+     size = std::max(size >> MASK_0_5_BIT, (size_t) 1); // space needed in bit array
+     duplicateBitArraySize = size;
+-    duplicateBitArray = new(std::nothrow) unsigned char[size];
++    duplicateBitArray = new(std::nothrow) unsigned short[size];
+     Util::checkAllocation(duplicateBitArray, "Cannot allocate duplicateBitArray memory in CacheFriendlyOperations");
+-    memset(duplicateBitArray, 0, duplicateBitArraySize * sizeof(unsigned char));
++    memset(duplicateBitArray, 0, duplicateBitArraySize * sizeof(*duplicateBitArray));
+ 
+     // find nearest upper power of 2^(x)
+     initBinSize = pow(2, ceil(log(initBinSize)/log(2)));
+@@ -183,7 +183,7 @@
+ 
+ template<unsigned int BINSIZE>
+ size_t CacheFriendlyOperations<BINSIZE>::findDuplicates(CounterResult *output, size_t outputSize, bool computeTotalScore) {
+-    memset(duplicateBitArray, 0, duplicateBitArraySize * sizeof(unsigned char));
++    memset(duplicateBitArray, 0, duplicateBitArraySize * sizeof(*duplicateBitArray));
+     size_t doubleElementCount = 0;
+     const CounterResult *bin_ref_pointer = binDataFrame;
+     for (size_t bin = 0; bin < BINCOUNT; bin++) {
+@@ -194,16 +194,12 @@
+         for (size_t n = 0; n < currBinSize; n++) {
+             const CounterResult element = binStartPos[n];
+             const unsigned int hashBinElement = element.id >> (MASK_0_5_BIT);
+-            //const unsigned int byteArrayPos = hashBinElement >> 3; // equal to hashBinElement / 8
+-            //const unsigned char bitPosMask = 1 << (hashBinElement & 7); // 7 = 00000111
+-            // check if duplicate element was found before
+-            const unsigned char currDiagonal = element.diagonal;
+-            //currDiagonal = (currDiagonal == 0) ? 200 : currDiagonal;
+-            const unsigned char prevDiagonal = duplicateBitArray[hashBinElement];
++            // Preserve the diagonal's low byte, reserving zero for unseen targets.
++            const unsigned short currDiagonal = static_cast<unsigned char>(element.diagonal) + 1;
++            const unsigned short prevDiagonal = duplicateBitArray[hashBinElement];
+             tmpElementBuffer[elementCount].id = element.id;
+             tmpElementBuffer[elementCount].diagonal = element.diagonal;
+             elementCount += (UNLIKELY(currDiagonal == prevDiagonal)) ? 1 : 0;
+-            // set element corresponding bit in byte
+             duplicateBitArray[hashBinElement] = currDiagonal;
+         }
+         // check for overflow
+@@ -267,7 +263,7 @@
+                 duplicateBitArray[byteArrayPos] = 0;
+             }
+         } else {
+-            memset(duplicateBitArray, 0, duplicateBitArraySize * sizeof(unsigned char));
++            memset(duplicateBitArray, 0, duplicateBitArraySize * sizeof(*duplicateBitArray));
+         }
+     }
+     return doubleElementCount;
+@@ -350,7 +346,7 @@
+ size_t CacheFriendlyOperations<BINSIZE>::keepMaxElement(CounterResult *output) {
+     size_t doubleElementCount = 0;
+     const CounterResult *bin_ref_pointer = binDataFrame;
+-    memset(duplicateBitArray, 0, duplicateBitArraySize * sizeof(unsigned char));
++    memset(duplicateBitArray, 0, duplicateBitArraySize * sizeof(*duplicateBitArray));
+     for (size_t bin = 0; bin < BINCOUNT; bin++) {
+         const CounterResult *binStartPos = (bin_ref_pointer + bin * binSize);
+         const size_t currBinSize = (bins[bin] - binStartPos);
+diff --git a/src/prefiltering/CacheFriendlyOperations.h b/src/prefiltering/CacheFriendlyOperations.h
+--- a/src/prefiltering/CacheFriendlyOperations.h
++++ b/src/prefiltering/CacheFriendlyOperations.h
+@@ -92,7 +92,7 @@
+ private:
+     // this bit array should fit in L1/L2
+     size_t duplicateBitArraySize;
+-    unsigned char *duplicateBitArray;
++    unsigned short *duplicateBitArray;
+     // needed for lower bit hashing function
+     const static unsigned int BINCOUNT = MASK_0_5 + 1;
+     size_t binSize;

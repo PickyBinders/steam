@@ -160,50 +160,12 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
     bool needSource = false;
     bool needTaxonomy = false;
     bool needTaxonomyMapping = false;
-    bool needTeaDB = false;
-
-    // Pre-process outfmt to handle TEA-specific columns before passing to base parser
-    // Replace tea-specific tokens with "empty" so the base parser doesn't error,
-    // then record positions and codes for our custom handling
-    std::string modifiedOutfmt = par.outfmt;
-    std::vector<std::pair<size_t, int>> teaColumns; // (position_in_outcodes, tea_code)
-    {
-        std::vector<std::string> tokens = Util::split(par.outfmt, ",");
-        std::string rebuilt;
-        for (size_t i = 0; i < tokens.size(); i++) {
-            int teaCode = -1;
-            if (tokens[i] == "tfident") { teaCode = LocalParameters::OUTFMT_TFIDENT; needBacktrace = true; needTeaDB = true; }
-            else if (tokens[i] == "tpident") { teaCode = LocalParameters::OUTFMT_TPIDENT; needBacktrace = true; needTeaDB = true; }
-            else if (tokens[i] == "qteaseq") { teaCode = LocalParameters::OUTFMT_QTEASEQ; needTeaDB = true; }
-            else if (tokens[i] == "tteaseq") { teaCode = LocalParameters::OUTFMT_TTEASEQ; needTeaDB = true; }
-            else if (tokens[i] == "qteaaln") { teaCode = LocalParameters::OUTFMT_QTEAALN; needBacktrace = true; needTeaDB = true; }
-            else if (tokens[i] == "tteaaln") { teaCode = LocalParameters::OUTFMT_TTEAALN; needBacktrace = true; needTeaDB = true; }
-
-            if (teaCode >= 0) {
-                teaColumns.push_back(std::make_pair(i, teaCode));
-                if (i > 0) rebuilt += ",";
-                rebuilt += "empty"; // placeholder for base parser
-            } else {
-                if (i > 0) rebuilt += ",";
-                rebuilt += tokens[i];
-            }
-        }
-        modifiedOutfmt = rebuilt;
-    }
-
-    std::vector<int> outcodes = Parameters::getOutputFormat(format, modifiedOutfmt, needSequenceDB, needBacktrace, needFullHeaders,
-                                                             needLookup, needSource, needTaxonomyMapping, needTaxonomy);
-    // Patch in TEA codes at the recorded positions
-    for (size_t i = 0; i < teaColumns.size(); i++) {
-        outcodes[teaColumns[i].first] = teaColumns[i].second;
-    }
-
-    // The main DB has TEA sequences; the _aa companion has AA sequences.
-    // Standard columns (qaln, taln, qseq, tseq, fident) should use AA.
-    // TEA-specific columns (qteaaln, tteaaln, qteaseq, tteaseq, tfident) use TEA (main DB).
-    bool needAADB = needSequenceDB;  // any standard seq column needs AA
-    if (needTeaDB) {
-        needSequenceDB = true; // TEA seqs are in the main DB
+    auto outcodes = LocalParameters::getTeaOutputFormat(format, par.outfmt, needSequenceDB,
+            needBacktrace, needFullHeaders, needLookup, needSource, needTaxonomyMapping, needTaxonomy);
+    bool needQueryAA = false, needTargetAA = false;
+    for (int code : outcodes) {
+        needQueryAA |= code == Parameters::OUTFMT_QSEQ || code == Parameters::OUTFMT_QALN || code == Parameters::OUTFMT_PPOS;
+        needTargetAA |= code == Parameters::OUTFMT_TSEQ || code == Parameters::OUTFMT_TALN || code == Parameters::OUTFMT_PPOS;
     }
 
     NcbiTaxonomy* t = NULL;
@@ -252,28 +214,6 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
         tDbrHeader = new IndexReader(par.db2, par.threads, IndexReader::SRC_HEADERS, (touch) ? (IndexReader::PRELOAD_INDEX | IndexReader::PRELOAD_DATA) : 0);
     }
 
-    // Load AA companion databases for standard output columns (qaln, taln, qseq, tseq, fident)
-    DBReader<unsigned int> *qAaDbr = NULL;
-    DBReader<unsigned int> *tAaDbr = NULL;
-    if (needAADB) {
-        std::string qAaDbName = par.db1 + "_aa";
-        if (FileUtil::fileExists((qAaDbName + ".dbtype").c_str())) {
-            qAaDbr = new DBReader<unsigned int>(qAaDbName.c_str(), (qAaDbName + ".index").c_str(), par.threads,
-                                                 DBReader<unsigned int>::USE_DATA | DBReader<unsigned int>::USE_INDEX);
-            qAaDbr->open(DBReader<unsigned int>::NOSORT);
-            if (sameDB) {
-                tAaDbr = qAaDbr;
-            } else {
-                std::string tAaDbName = par.db2 + "_aa";
-                if (FileUtil::fileExists((tAaDbName + ".dbtype").c_str())) {
-                    tAaDbr = new DBReader<unsigned int>(tAaDbName.c_str(), (tAaDbName + ".index").c_str(), par.threads,
-                                                         DBReader<unsigned int>::USE_DATA | DBReader<unsigned int>::USE_INDEX);
-                    tAaDbr->open(DBReader<unsigned int>::NOSORT);
-                }
-            }
-        }
-    }
-
     bool queryNucs = Parameters::isEqualDbtype(qDbr.sequenceReader->getDbtype(), Parameters::DBTYPE_NUCLEOTIDES);
     bool targetNucs = Parameters::isEqualDbtype(tDbr->sequenceReader->getDbtype(), Parameters::DBTYPE_NUCLEOTIDES);
     if (needSequenceDB) {
@@ -308,6 +248,22 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
         queryProfile = Parameters::isEqualDbtype(qDbr.sequenceReader->getDbtype(), Parameters::DBTYPE_HMM_PROFILE);
         targetProfile = Parameters::isEqualDbtype(tDbr->sequenceReader->getDbtype(), Parameters::DBTYPE_HMM_PROFILE);
     }
+
+    auto openAA = [&](const std::string &db) {
+        const std::string aa = PrefilteringIndexReader::dbPathWithoutIndex(db) + "_aa";
+        if (!FileUtil::fileExists((aa + ".dbtype").c_str())) {
+            Debug(Debug::ERROR) << "Output format requires the amino acid companion database " << aa << "\n";
+            EXIT(EXIT_FAILURE);
+        }
+        auto *reader = new DBReader<unsigned int>(aa.c_str(), (aa + ".index").c_str(), par.threads,
+                DBReader<unsigned int>::USE_DATA | DBReader<unsigned int>::USE_INDEX);
+        reader->open(DBReader<unsigned int>::NOSORT);
+        return reader;
+    };
+    needQueryAA &= !queryProfile;
+    needTargetAA &= !targetProfile;
+    auto *qAaDbr = (needQueryAA || (sameDB && needTargetAA)) ? openAA(par.db1) : nullptr;
+    auto *tAaDbr = needTargetAA ? (sameDB ? qAaDbr : openAA(par.db2)) : nullptr;
 
     DBReader<unsigned int> alnDbr(par.db3.c_str(), par.db3Index.c_str(), par.threads, DBReader<unsigned int>::USE_INDEX|DBReader<unsigned int>::USE_DATA);
     alnDbr.open(DBReader<unsigned int>::LINEAR_ACCCESS);
@@ -608,7 +564,6 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
                                         if (queryProfile) {
                                             result.append(queryProfData.c_str(), res.qLen);
                                         } else {
-                                            // Use AA sequence if available, fall back to TEA
                                             result.append(queryAAData, res.qLen);
                                         }
                                         break;
@@ -997,11 +952,11 @@ int steamconvertalis(int argc, const char **argv, const Command &command) {
     }
     if (qAaDbr != NULL) {
         qAaDbr->close();
-        if (!sameDB && tAaDbr != NULL) {
-            tAaDbr->close();
-            delete tAaDbr;
-        }
         delete qAaDbr;
+    }
+    if (!sameDB && tAaDbr != NULL) {
+        tAaDbr->close();
+        delete tAaDbr;
     }
     delete subMat;
 

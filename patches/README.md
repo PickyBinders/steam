@@ -13,6 +13,8 @@ versions fail configuration. Apply the complete set before compiling.
 | `0005-preserve-spaced-pattern-index.patch` | Write nonempty spaced patterns into cached-index metadata, preserving k5/k6 seed selection. |
 | `0006-split-invariant-prefilter.patch` | Complete-target seed counts across splits, global candidate caps, deterministic ties, and unique target counts when merging overflow chunks. |
 | `0007-prefilter-setup-hook.patch` | Post-parse setup hook so standalone STEAM prefilter uses paired scoring, the TEA matrix and automatic seed selection. |
+| `0008-indexed-split-statistics.patch` | Sum the stored k-mer bucket sizes across cached index splits. |
+| `0009-prefilter-diagonal-zero.patch` | Give unseen targets a separate sentinel in the double-hit filter. |
 
 Patch `0006` depends on the bucket-filter interfaces in `0001` and the
 companion-AA interfaces in `0004`. Apply the complete series in filename order.
