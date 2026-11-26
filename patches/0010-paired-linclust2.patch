@@ -1,0 +1,282 @@
+diff --git a/src/alignment/Align2clust.cpp b/src/alignment/Align2clust.cpp
+index cc23229e..6adee2dd 100644
+--- a/src/alignment/Align2clust.cpp
++++ b/src/alignment/Align2clust.cpp
+@@ -9,6 +9,7 @@
+ #include "IndexReader.h"
+ #include "FastSort.h"
+ #include "BlockAligner.h"
++#include "PairedClusterAlignment.h"
+ #include "Alignment.h"
+ #include "AlignmentSymmetry.h"
+ #include <atomic>
+@@ -426,6 +427,7 @@ int doAlign2clust(Parameters &par, DBWriter &resultWriter, DBReader<DBKeyType> &
+     }
+ 
+ 
++    std::unique_ptr<PairedClusterAlignment> paired(par.createPairedClusterAlignment());
+     const size_t dbSize = seqDbr->getSize();
+ 
+     BaseMatrix *subMat = new SubstitutionMatrix(
+@@ -533,16 +535,20 @@ int doAlign2clust(Parameters &par, DBWriter &resultWriter, DBReader<DBKeyType> &
+ #ifdef OPENMP
+         threadIdx = (unsigned int) omp_get_thread_num();
+ #endif
+-        Matcher matcher(Parameters::DBTYPE_AMINO_ACIDS, db_maxseqlen, subMat, &evaluer, 
+-                       par.compBiasCorrection, par.compBiasCorrectionScale, 
+-                       par.gapOpen.values.aminoacid(), par.gapExtend.values.aminoacid(), 
+-                       0.0, par.zdrop);
+         Sequence query(db_maxseqlen, Parameters::DBTYPE_AMINO_ACIDS, subMat, 0, false, par.compBiasCorrection);
+         Sequence target(db_maxseqlen, Parameters::DBTYPE_AMINO_ACIDS, subMat, 0, false, par.compBiasCorrection);
+         Sequence element(db_maxseqlen, Parameters::DBTYPE_AMINO_ACIDS, subMat, 0, false, par.compBiasCorrection);
+-        BlockAligner blockAligner(Parameters::DBTYPE_AMINO_ACIDS, db_maxseqlen, subMat, &fastMatrix, 
+-                                 &evaluer, par.compBiasCorrection, par.compBiasCorrectionScale, 
+-                                 -par.gapOpen.values.aminoacid(), -par.gapExtend.values.aminoacid());
++        auto pairedWorker = paired ? paired->worker(threadIdx) : nullptr;
++        std::unique_ptr<Matcher> matcher;
++        std::unique_ptr<BlockAligner> blockAligner;
++        if (!pairedWorker) {
++            matcher.reset(new Matcher(Parameters::DBTYPE_AMINO_ACIDS, db_maxseqlen, subMat, &evaluer,
++                par.compBiasCorrection, par.compBiasCorrectionScale,
++                par.gapOpen.values.aminoacid(), par.gapExtend.values.aminoacid(), 0.0, par.zdrop));
++            blockAligner.reset(new BlockAligner(Parameters::DBTYPE_AMINO_ACIDS, db_maxseqlen, subMat,
++                &fastMatrix, &evaluer, par.compBiasCorrection, par.compBiasCorrectionScale,
++                -par.gapOpen.values.aminoacid(), -par.gapExtend.values.aminoacid()));
++        }
+         std::vector<std::pair<DBKeyType, unsigned short>> targetsWithDiagonal;
+         targetsWithDiagonal.reserve(1000);
+ 
+@@ -594,8 +600,12 @@ int doAlign2clust(Parameters &par, DBWriter &resultWriter, DBReader<DBKeyType> &
+             char *querySequence = seqDbr->getData(queryId, threadIdx);
+             size_t queryLength = seqDbr->getSeqLen(queryId);
+             query.mapSequence(queryId, queryKey, querySequence, queryLength);
+-            blockAligner.initQuery(&query);
+-            matcher.initQuery(&query);
++            if (pairedWorker) {
++                pairedWorker->prepare(queryKey, querySequence, queryLength);
++            } else {
++                blockAligner->initQuery(&query);
++                matcher->initQuery(&query);
++            }
+ 
+             size_t prefSize = 0;
+             while (*alignmentData != '\0') {
+@@ -649,6 +659,45 @@ int doAlign2clust(Parameters &par, DBWriter &resultWriter, DBReader<DBKeyType> &
+                     continue;
+                 }
+ 
++                if (pairedWorker) {
++                    Matcher::result_t result;
++                    if (!pairedWorker->align(targetKey, seqDbr->getData(targetId, threadIdx),
++                                             seqDbr->getSeqLen(targetId), diagonal, false, result)) {
++                        continue;
++                    }
++                    bool accepted = true;
++                    if (cluDbr) {
++                        pendingMemberAln.clear();
++                        char keyBuffer[32];
++                        const size_t clusterId = cluDbr->getId(targetKey);
++                        char *members = cluDbr->getData(clusterId, threadIdx);
++                        for (; *members; members = Util::skipLine(members)) {
++                            Util::parseKey(members, keyBuffer);
++                            const DBKeyType memberKey = Util::fast_atoi<DBKeyType>(keyBuffer);
++                            if (memberKey == targetKey) continue;
++                            const size_t memberId = cluSeqDbr->getId(memberKey);
++                            Matcher::result_t memberResult;
++                            if (!pairedWorker->align(memberKey, cluSeqDbr->getData(memberId, threadIdx),
++                                                     cluSeqDbr->getSeqLen(memberId), diagonal, true, memberResult)) {
++                                accepted = false;
++                                break;
++                            }
++                            if (includeAlignFiles) {
++                                appendAlignmentResult(pendingMemberAln, alnLineBuffer.data(),
++                                                      memberResult, par.addBacktrace);
++                            }
++                        }
++                    }
++                    if (accepted && loadAssignedCluster(assignedCluster, targetId) == DB_LOCAL_ID_INVALID) {
++                        clusterResult.memberIds.push_back(targetId);
++                        if (includeAlignFiles) {
++                            appendAlignmentResult(alnResultBuffer, alnLineBuffer.data(), result, par.addBacktrace);
++                            if (cluDbr) alnResultBuffer += pendingMemberAln;
++                        }
++                    }
++                    continue;
++                }
++
+                 char *targetSequence = seqDbr->getData(targetId, threadIdx);
+                 size_t targetLength = seqDbr->getSeqLen(targetId);
+                 target.mapSequence(targetId, targetKey, targetSequence, targetLength);
+@@ -657,7 +706,7 @@ int doAlign2clust(Parameters &par, DBWriter &resultWriter, DBReader<DBKeyType> &
+                     continue;
+                 }
+ 
+-                BlockAligner::UngappedAln_res ungappedAlignment = blockAligner.ungappedAlign(&target, diagonal); 
++                BlockAligner::UngappedAln_res ungappedAlignment = blockAligner->ungappedAlign(&target, diagonal);
+                 
+                 bool hasEvalue = (ungappedAlignment.eval <= par.evalThr);
+                 bool hasAlnLen = (ungappedAlignment.alnLen >= par.alnLenThr);
+@@ -710,7 +759,7 @@ int doAlign2clust(Parameters &par, DBWriter &resultWriter, DBReader<DBKeyType> &
+                                     allpass = false;
+                                     break;
+                                 }
+-                                BlockAligner::UngappedAln_res elementUngappedAlignment = blockAligner.ungappedAlign(&element, elementDiagonal);
++                                BlockAligner::UngappedAln_res elementUngappedAlignment = blockAligner->ungappedAlign(&element, elementDiagonal);
+                                 
+                                 // 2. check the criteria
+                                 bool elementHasEvalue = (elementUngappedAlignment.eval <= par.evalThr);
+@@ -727,7 +776,7 @@ int doAlign2clust(Parameters &par, DBWriter &resultWriter, DBReader<DBKeyType> &
+                                 
+                                 if (!(elementHasAlnLen && elementHasCoverage && elementHasSeqId && elementHasEvalue)) {
+                                     // 3. gapped alignment
+-                                    Matcher::result_t res_element = matcher.getSWResult(&element, static_cast<int>(elementDiagonal), false, par.covMode, par.covThr, par.evalThr,
++                                    Matcher::result_t res_element = matcher->getSWResult(&element, static_cast<int>(elementDiagonal), false, par.covMode, par.covThr, par.evalThr,
+                                                                         swMode, par.seqIdMode, false);
+                                     if (Alignment::checkCriteria(res_element, false, par.evalThr, par.seqIdThr, par.alnLenThr, par.covMode, par.covThr) == false) {
+                                         allpass = false;
+@@ -802,7 +851,7 @@ int doAlign2clust(Parameters &par, DBWriter &resultWriter, DBReader<DBKeyType> &
+                 if (foundConsecutiveMatchSeed) {
+                     std::string gappedBacktrace;
+ 
+-                    s_align gappedAlignment = blockAligner.bandedalign(&target, newQueryStartPos, newTargetStartPos,
++                    s_align gappedAlignment = blockAligner->bandedalign(&target, newQueryStartPos, newTargetStartPos,
+                                                                        gappedBacktrace, xDrop, par.covThr, par.covMode);
+                     // bandedalign reports failure as evalue < 0 with an empty backtrace, and the
+                     // default seq-id mode divides by the alignment length
+@@ -851,7 +900,7 @@ int doAlign2clust(Parameters &par, DBWriter &resultWriter, DBReader<DBKeyType> &
+                                         allpass = false;
+                                         break;
+                                     }
+-                                    BlockAligner::UngappedAln_res elementUngappedAlignment = blockAligner.ungappedAlign(&element, elementDiagonal);
++                                    BlockAligner::UngappedAln_res elementUngappedAlignment = blockAligner->ungappedAlign(&element, elementDiagonal);
+                                     
+                                     // 2. check the criteria
+                                     bool elementHasEvalue = (elementUngappedAlignment.eval <= par.evalThr);
+@@ -868,7 +917,7 @@ int doAlign2clust(Parameters &par, DBWriter &resultWriter, DBReader<DBKeyType> &
+                                     
+                                     if (!(elementHasAlnLen && elementHasCoverage && elementHasSeqId && elementHasEvalue)) {
+                                         // 3. gapped alignment
+-                                        Matcher::result_t res_element = matcher.getSWResult(&element, static_cast<int>(elementDiagonal), false, par.covMode, par.covThr, par.evalThr,
++                                        Matcher::result_t res_element = matcher->getSWResult(&element, static_cast<int>(elementDiagonal), false, par.covMode, par.covThr, par.evalThr,
+                                                                             swMode, par.seqIdMode, false);
+                                         if (Alignment::checkCriteria(res_element, false, par.evalThr, par.seqIdThr, par.alnLenThr, par.covMode, par.covThr) == false) {
+                                             allpass = false;
+diff --git a/src/alignment/PairedClusterAlignment.h b/src/alignment/PairedClusterAlignment.h
+new file mode 100644
+index 00000000..a58d1b9d
+--- /dev/null
++++ b/src/alignment/PairedClusterAlignment.h
+@@ -0,0 +1,18 @@
++#pragma once
++
++#include <memory>
++#include "Matcher.h"
++
++class PairedClusterAlignment {
++public:
++    class Worker {
++    public:
++        virtual ~Worker() = default;
++        virtual void prepare(DBKeyType key, const char *tea, unsigned int length) = 0;
++        virtual bool align(DBKeyType key, const char *tea, unsigned int length,
++                           unsigned short diagonal, bool member, Matcher::result_t &result) = 0;
++    };
++
++    virtual ~PairedClusterAlignment() = default;
++    virtual std::unique_ptr<Worker> worker(unsigned int thread) = 0;
++};
+diff --git a/src/commons/Parameters.h b/src/commons/Parameters.h
+index e90941be..7dfc8cf8 100644
+--- a/src/commons/Parameters.h
++++ b/src/commons/Parameters.h
+@@ -63,6 +63,8 @@ struct MMseqsParameter {
+ void initParameterSingleton(void);
+ #define DEFAULT_PARAMETER_SINGLETON_INIT void initParameterSingleton() { new Parameters; }
+ 
++class PairedClusterAlignment;
++
+ class Parameters {
+ public:
+ 
+@@ -805,6 +807,7 @@ public:
+     // Extension hook after clustering parameters have been parsed.
+     virtual void configureClustering(bool linear = false) { (void) linear; }
+     virtual void configurePrefilter() {}
++    virtual PairedClusterAlignment *createPairedClusterAlignment() { return nullptr; }
+     void initMatrices();
+     void parseParameters(int argc, const char *pargv[], const Command &command, bool printPar, int parseFlags,
+                          int outputFlags);
+diff --git a/src/workflow/Cluster.cpp b/src/workflow/Cluster.cpp
+index 75bcc5ed..121c73ae 100644
+--- a/src/workflow/Cluster.cpp
++++ b/src/workflow/Cluster.cpp
+@@ -34,6 +34,7 @@ void setWorkflowDefaults(Parameters *p) {
+         p->evalThr = 0.01;
+         p->maxResListLen = 1000;
+         p->kmersPerSequence = 300;
++        p->linclustVersion = Parameters::LINCLUST_VERSION1;
+     }
+ }
+ 
+@@ -134,6 +135,10 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
+     par.PARAM_INCLUDE_ONLY_EXTENDABLE.addCategory(MMseqsParameter::COMMAND_EXPERT);
+     par.parseParameters(argc, argv, command, false, 0, 0);
+     par.configureClustering();
++    if (steamPrefilterSubMat() && par.clusterVersion != Parameters::CLUSTER_VERSION1) {
++        Debug(Debug::ERROR) << "Use --linclust-version 2 to enable STEAM Linclust2 within the paired cascade.\n";
++        EXIT(EXIT_FAILURE);
++    }
+     const int dbType = FileUtil::parseDbType(par.db1.c_str());
+     bool isNucleotideDb = (Parameters::isEqualDbtype(dbType, Parameters::DBTYPE_NUCLEOTIDES));
+     if (isNucleotideDb) {
+@@ -303,7 +308,7 @@ int clusteringworkflow(int argc, const char **argv, const Command& command) {
+             cmd.addVariable("PREFILTER_PAR", par.createParameterString(par.prefilter).c_str());
+             cmd.addVariable("ALIGN2CLUST_PAR", par.createParameterString(par.align2clust).c_str());
+             cmd.addVariable("SWITCH_CONSENSUS_REP", par.switchConsensusRep ? "TRUE" : NULL);
+-            cmd.addVariable("KEEP_SWITCH_ALN", (par.switchConsensusRep && writeAlnFiles) ? "TRUE" : NULL);
++            cmd.addVariable("KEEP_SWITCH_ALN", (par.switchConsensusRep && par.PARAM_INCLUDE_ALIGN_FILES.wasSet) ? "TRUE" : NULL);
+             cmd.addVariable("PICKREP_PAR", par.createParameterString(par.pickrepprofile).c_str());
+         }
+         std::string program = tmpDir + "/cascaded_clustering.sh";
+diff --git a/src/workflow/Linclust.cpp b/src/workflow/Linclust.cpp
+index 142cb241..e8d8d0ed 100644
+--- a/src/workflow/Linclust.cpp
++++ b/src/workflow/Linclust.cpp
+@@ -32,6 +32,7 @@ void setLinclustWorkflowDefaults(Parameters *p) {
+     if (getenv("STEAM_CLUSTER_DEFAULTS")) {
+         p->evalThr = 0.01;
+         p->kmersPerSequence = 300;
++        p->linclustVersion = Parameters::LINCLUST_VERSION1;
+     }
+ }
+ 
+@@ -49,6 +50,12 @@ int linclust(int argc, const char **argv, const Command& command) {
+ 
+-    par.parseParameters(argc, argv, command, true, 0, 0);
++    par.parseParameters(argc, argv, command, false, 0, 0);
+     par.configureClustering(true);
++    if (steamPrefilterSubMat() && par.linclustVersion == Parameters::LINCLUST_VERSION2
++            && (par.clustHash || par.switchConsensusRep || par.alignmentMode == Parameters::ALIGNMENT_MODE_UNGAPPED)) {
++        Debug(Debug::ERROR) << "STEAM Linclust2 requires paired gapped alignment without clusthash or consensus switching.\n";
++        EXIT(EXIT_FAILURE);
++    }
++    par.printParameters(command.cmd, argc, argv, *command.params);
+     std::string tmpDir = par.db3;
+     std::string hash = SSTR(par.hashParameter(command.databases, par.filenames, par.linclustworkflow));
+     if (par.reuseLatest) {
+@@ -69,6 +76,7 @@ int linclust(int argc, const char **argv, const Command& command) {
+     CommandCaller cmd;
+     cmd.addVariable("REMOVE_TMP", par.removeTmpFiles ? "TRUE" : NULL);
+     cmd.addVariable("RUNNER", par.runner.c_str());
++    cmd.addVariable("MERGECLU_PAR", par.createParameterString(par.threadsandcompression).c_str());
+     if (par.linclustVersion == 1) {
+         cmd.addVariable("LINCLUST_MODULE", "linclust1");
+     } else if (par.linclustVersion == 2) {
+@@ -191,7 +199,6 @@ int linclust(int argc, const char **argv, const Command& command) {
+         }
+         // # 5. Clustering using greedy set cover.
+         cmd.addVariable("CLUSTER_PAR", par.createParameterString(par.clust).c_str());
+-        cmd.addVariable("MERGECLU_PAR", par.createParameterString(par.threadsandcompression).c_str());
+ 
+     } else if (par.linclustVersion == 2) {
+         par.alphabetSize = alphabetSize;

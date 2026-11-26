@@ -16,7 +16,7 @@ See [the preprint](https://doi.org/10.1101/2025.11.27.690975) to learn more.
 
 ```bash
 # Install build dependencies (if needed)
-mamba install -c conda-forge cmake gxx_linux-64
+mamba install -c conda-forge cmake gxx_linux-64 "rust>=1.68"
 
 # Build
 git clone --branch dev --recursive https://github.com/PickyBinders/steam.git
@@ -60,11 +60,11 @@ Useful flags:
 
 `easy-cluster` runs cascaded clustering (sensitive) and `easy-linclust` runs linear-time clustering (faster, less sensitive). Both take paired TEA/AA FASTAs:
 
-Cascaded clustering ranks prefilter candidates by combined TEA+AA ungapped
-scores, retaining at most 100, 200, and `--max-seqs` candidates in its three
-stages (final default: 1000). Smaller explicit limits are respected at every
-stage. Single-step clustering uses the final limit directly. Clustering uses
-300 sampled k-mers per sequence by default.
+The three-pass cascade retains up to 100, 200, and `--max-seqs` candidates
+(default 1000 in the final pass). The first pass ranks by shared seed count,
+and later passes rank by combined TEA+AA ungapped scores.
+`--cluster-steps 1` runs one representative search after preclustering,
+using combined scores and the final candidate limit.
 
 ```bash
 # Cascaded clustering
@@ -72,6 +72,9 @@ steam easy-cluster proteins_tea.fasta proteins_aa.fasta clusterResult tmp
 
 # Linear-time clustering (large datasets)
 steam easy-linclust proteins_tea.fasta proteins_aa.fasta clusterResult tmp
+
+# Paired Linclust2
+steam easy-linclust proteins_tea.fasta proteins_aa.fasta clusterResult tmp --linclust-version 2
 ```
 
 Outputs three files alongside `clusterResult`:
@@ -91,6 +94,8 @@ Useful flags:
 | `--cov-mode` | 0 | 0=bidirectional, 1=target, 2=query |
 | `--cluster-reassign` | off | Cascaded only: corrects criteria-violations from cascaded merging |
 | `--single-step-clustering` | off | Cascaded only: skip cascading, single pass |
+| `--linclust-version` | 1 | Select `2` for paired Linclust2 with automatic k and 21 seeds per sequence. In cascaded clustering this selects the preliminary stage. |
+| `--cluster-steps` | automatic | Number of representative-search passes after preclustering. |
 
 ## Commands
 

@@ -70,6 +70,7 @@ public:
     void configurePrefilter() override;
     void configureUngappedScoring(bool combined);
     void configureClustering(bool linear = false) override;
+    PairedClusterAlignment *createPairedClusterAlignment() override;
     void resolveKmerPattern(const std::string &targetDb);
 
 private:

@@ -10,11 +10,12 @@ versions fail configuration. Apply the complete set before compiling.
 | `0002-steam-cluster-prefilter-submat.patch` | Configure paired-alphabet clustering after parameter parsing; separate prefilter/alignment matrices, retain calibrated alignment settings, use seed-count ranking in the first multi-round pass and combined diagonal scoring later, retain 100/200/final candidate caps, and preserve paired databases during reassignment. |
 | `0003-steam-linclust-bucket-filter.patch` | Frequent-seed exclusion in linclust, which has its own matcher; 10% default. |
 | `0004-combined-tea-aa-ungapped.patch` | Companion-AA database and matrix loading, plus combined TEA+AA diagonal scoring before candidate truncation. |
-| `0005-preserve-spaced-pattern-index.patch` | Write nonempty spaced patterns into cached-index metadata, preserving k5/k6 seed selection. |
 | `0006-split-invariant-prefilter.patch` | Complete-target seed counts across splits, global candidate caps, deterministic ties, and unique target counts when merging overflow chunks. |
 | `0007-prefilter-setup-hook.patch` | Post-parse setup hook so standalone STEAM prefilter uses paired scoring, the TEA matrix and automatic seed selection. |
 | `0008-indexed-split-statistics.patch` | Sum the stored k-mer bucket sizes across cached index splits. |
 | `0009-prefilter-diagonal-zero.patch` | Give unseen targets a separate sentinel in the double-hit filter. |
+| `0010-paired-linclust2.patch` | Route Linclust2 candidate diagonals and original-member checks through the paired alignment interface. Enable with `--linclust-version 2`. |
+| `0011-paired-banded-linclust2.patch` | Use the native diagonal and SIMD block extension with paired TEA and AA scores, with workspace sized to the sequences. |
 
 Patch `0006` depends on the bucket-filter interfaces in `0001` and the
 companion-AA interfaces in `0004`. Apply the complete series in filename order.

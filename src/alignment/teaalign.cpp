@@ -6,6 +6,9 @@
 #include "LocalParameters.h"
 #include "Matcher.h"
 #include "Alignment.h"
+#include "PairedClusterAlignment.h"
+#include "BlockAligner.h"
+#include <atomic>
 #include "TeaSmithWaterman.h"
 #include "SubstitutionMatrix.h"
 #include "FileUtil.h"
@@ -181,6 +184,263 @@ static int doTeaAlign(TeaSmithWaterman &teaSW,
     return 0;
 }
 
+static std::string teaMatrixSource(LocalParameters &par) {
+    std::string teaMatData;
+    for (size_t i = 0; i < par.substitutionMatrices.size(); i++) {
+        if (par.substitutionMatrices[i].name == par.teaMatrixFile) {
+            std::string matrixData((const char *)par.substitutionMatrices[i].subMatData,
+                                   par.substitutionMatrices[i].subMatDataLen);
+            char *serialized = BaseMatrix::serialize(par.substitutionMatrices[i].name, matrixData);
+            teaMatData.assign(serialized);
+            free(serialized);
+            break;
+        }
+    }
+    return teaMatData.empty() ? par.teaMatrixFile : teaMatData;
+}
+
+namespace {
+
+class SteamClusterAlignment final : public PairedClusterAlignment {
+public:
+    explicit SteamClusterAlignment(LocalParameters &parameters)
+        : par(parameters), calibrated(parameters.validateCalibration()),
+          teaMatrix(teaMatrixSource(parameters).c_str(), par.teaScale, par.scoreBias),
+          aaMatrix(par.scoringMatrixFile.values.aminoacid().c_str(), par.teaWeight, par.scoreBias),
+          tinyTea(flatten(teaMatrix)), tinyAA(flatten(aaMatrix)),
+          queryAA(openAA(par.db1)),
+          memberAA(par.filterSeqDBFile.empty() || par.filterSeqDBFile == par.db1
+                   ? nullptr : openAA(par.filterSeqDBFile)),
+          searchSpace(calibrated ? effectiveTargets(par.filterSeqDBFile.empty() ? par.db1 : par.filterSeqDBFile) : 0.0) {
+        if (par.seedCorrection) {
+            if (par.seedModelFile == "seed_markov.txt") {
+                evidence.loadText(std::string(reinterpret_cast<const char *>(seed_markov_txt),
+                                              seed_markov_txt_len), par.seedPattern);
+            } else {
+                evidence.load(par.seedModelFile, par.seedPattern);
+            }
+        }
+        Debug(Debug::INFO) << "Linclust2 paired TEA+AA alignment, native banded extension, AA weight=" << par.teaWeight
+                           << ", effective targets=" << searchSpace << "\n";
+    }
+
+    ~SteamClusterAlignment() override {
+        Debug(Debug::INFO) << "Linclust2 paired alignment counts: ungapped accepted=" << ungappedAccepted.load()
+                           << ", banded attempted=" << bandedTried.load() << ", banded accepted=" << bandedAccepted.load()
+                           << ", exact fallback=" << exactTried.load() << "\n";
+        if (memberAA) memberAA->close();
+        queryAA->close();
+    }
+
+    std::unique_ptr<Worker> worker(unsigned int thread) override {
+        return std::unique_ptr<Worker>(new Thread(*this, thread));
+    }
+
+private:
+    static std::vector<int8_t> flatten(const SubstitutionMatrix &matrix) {
+        std::vector<int8_t> values;
+        for (int row = 0; row < matrix.alphabetSize; ++row) {
+            values.insert(values.end(), matrix.subMatrix[row], matrix.subMatrix[row] + matrix.alphabetSize);
+        }
+        return values;
+    }
+
+    std::unique_ptr<DBReader<DBKeyType>> openAA(const std::string &base) const {
+        const std::string name = base + "_aa";
+        auto database = std::unique_ptr<DBReader<DBKeyType>>(new DBReader<DBKeyType>(
+            name.c_str(), (name + ".index").c_str(), par.threads,
+            DBReader<DBKeyType>::USE_DATA | DBReader<DBKeyType>::USE_INDEX));
+        database->open(DBReader<DBKeyType>::NOSORT);
+        return database;
+    }
+
+    static double effectiveTargets(const std::string &base) {
+        DatabaseDiversityMetadata diversity;
+        std::string error;
+        if (!DatabaseDiversity::read(base, diversity, error)) {
+            Debug(Debug::ERROR) << "Cannot compute Linclust2 E-values: " << error << "\n";
+            EXIT(EXIT_FAILURE);
+        }
+        return diversity.effectiveTargets;
+    }
+
+    class Thread final : public Worker {
+    public:
+        Thread(SteamClusterAlignment &context, unsigned int index)
+            : ctx(context), thread(index),
+              queryTea(ctx.par.maxSeqLen, Parameters::DBTYPE_AMINO_ACIDS, &ctx.teaMatrix, 0, false, ctx.par.compBiasCorrection),
+              queryAA(ctx.par.maxSeqLen, Parameters::DBTYPE_AMINO_ACIDS, &ctx.aaMatrix, 0, false, ctx.par.compBiasCorrection),
+              targetTea(ctx.par.maxSeqLen, Parameters::DBTYPE_AMINO_ACIDS, &ctx.teaMatrix, 0, false, ctx.par.compBiasCorrection),
+              targetAA(ctx.par.maxSeqLen, Parameters::DBTYPE_AMINO_ACIDS, &ctx.aaMatrix, 0, false, ctx.par.compBiasCorrection) {
+            const auto &par = ctx.par;
+            const int open = par.gapOpen.values.aminoacid(), extend = par.gapExtend.values.aminoacid();
+            if (open > extend && extend > 0 && open <= 127) {
+                const size_t maxLength = ctx.memberAA ? std::max(ctx.queryAA->getMaxSeqLen(), ctx.memberAA->getMaxSeqLen())
+                                                       : ctx.queryAA->getMaxSeqLen();
+                banded.reset(new BlockAligner(Parameters::DBTYPE_AMINO_ACIDS, maxLength,
+                    &ctx.aaMatrix, nullptr, nullptr, par.compBiasCorrection, par.compBiasCorrectionScale,
+                    -open, -extend, &ctx.teaMatrix));
+            }
+        }
+
+        ~Thread() override {
+            ctx.ungappedAccepted.fetch_add(ungappedAccepted, std::memory_order_relaxed);
+            ctx.bandedTried.fetch_add(bandedTried, std::memory_order_relaxed);
+            ctx.bandedAccepted.fetch_add(bandedAccepted, std::memory_order_relaxed);
+            ctx.exactTried.fetch_add(exactTried, std::memory_order_relaxed);
+        }
+
+        void prepare(DBKeyType key, const char *tea, unsigned int length) override {
+            mapAA(*ctx.queryAA, queryAA, key, length);
+            queryTea.mapSequence(0, key, tea, length);
+            if (banded) banded->initQuery(&queryAA, &queryTea);
+            exactReady = false;
+            if (ctx.par.seedCorrection) seedQuery = ctx.evidence.prepare(tea, length);
+            maxEvidence = ctx.par.seedCorrection && ctx.calibrated && std::isfinite(ctx.par.evalThr)
+                          ? AlignmentSeedEvidence::maxEvidence(seedQuery) : 0.0;
+        }
+
+        bool align(DBKeyType key, const char *tea, unsigned int length,
+                   unsigned short diagonal, bool member, Matcher::result_t &result) override {
+            const auto &par = ctx.par;
+            if (!Util::canBeCovered(par.covThr, par.covMode, queryTea.L, length)) return false;
+            mapAA(ctx.memberAA ? *ctx.memberAA : *ctx.queryAA, targetAA, key, length);
+            targetTea.mapSequence(0, key, tea, length);
+            if (!banded) return exactAlign(tea, result);
+
+            banded->setTargetCompanion(&targetTea);
+            if (!member) memberDiagonal = diagonal;
+            const auto seed = banded->pairedUngapped(&targetAA, memberDiagonal);
+            const int qStart = seed.startPos + (seed.diagonal >= 0 ? seed.distToDiagonal : 0);
+            const int tStart = seed.startPos + (seed.diagonal < 0 ? seed.distToDiagonal : 0);
+            if (seed.score > 0) {
+                const int span = seed.endPos - seed.startPos + 1;
+                backtrace.assign(span, 'M');
+                if (finish(seed.score, qStart, tStart, qStart + span - 1, tStart + span - 1, tea, result)) {
+                    ++ungappedAccepted;
+                    return true;
+                }
+            }
+            // MMseqs2 gives original members an unrestricted alignment when the diagonal fails.
+            if (member) return exactAlign(tea, result);
+            if (seed.score == 0) return false;
+            // Native Linclust2 anchors on three consecutive matches of the seed alphabet.
+            for (int i = 1; i < seed.endPos - seed.startPos; ++i) {
+                const auto *q = queryTea.numSequence + qStart + i;
+                const auto *t = targetTea.numSequence + tStart + i;
+                if (q[-1] != t[-1] || q[0] != t[0] || q[1] != t[1]) continue;
+                backtrace.clear();
+                int rawScore = 0;
+                const int xDrop = 32 * par.gapExtend.values.aminoacid() + par.gapOpen.values.aminoacid();
+                ++bandedTried;
+                const auto alignment = banded->bandedalign(&targetAA, qStart + i, tStart + i,
+                    backtrace, xDrop, par.covThr, par.covMode, &rawScore);
+                if (alignment.evalue < 0 || backtrace.empty()) return false;
+                if (finish(rawScore, alignment.qStartPos1, alignment.dbStartPos1,
+                           alignment.qEndPos1, alignment.dbEndPos1, tea, result)) {
+                    memberDiagonal = 0;
+                    ++bandedAccepted;
+                    return true;
+                }
+                return false;
+            }
+            return false;
+        }
+
+    private:
+        bool finish(int rawScore, int qStart, int tStart, int qEnd, int tEnd,
+                    const char *tea, Matcher::result_t &result) {
+            const auto &par = ctx.par;
+            const float qCov = SmithWaterman::computeCov(qStart, qEnd, queryAA.L);
+            const float tCov = SmithWaterman::computeCov(tStart, tEnd, targetAA.L);
+            const size_t span = backtrace.size();
+            if (rawScore <= 0 || !Util::hasCoverage(par.covThr, par.covMode, qCov, tCov)
+                    || !Util::hasAlignmentLength(par.alnLenThr, span)) return false;
+            if (ctx.calibrated && std::isfinite(par.evalThr)
+                    && evalue(std::floor(rawScore * (1.0 + maxEvidence) + .5)) > par.evalThr) return false;
+            unsigned int aaIds = 0, teaIds = 0;
+            int q = qStart, t = tStart;
+            for (char op : backtrace) {
+                if (op == 'M') {
+                    aaIds += queryAA.numSequence[q] == targetAA.numSequence[t];
+                    teaIds += queryTea.numSequence[q] == targetTea.numSequence[t];
+                }
+                q += op != 'D';
+                t += op != 'I';
+            }
+            const float seqId = Util::computeSeqId(par.seqIdMode, aaIds, queryAA.L, targetAA.L, span);
+            if (seqId < par.seqIdThr || teaIds < static_cast<double>(par.minTfident) * span) return false;
+            const int score = par.seedCorrection ? AlignmentSeedEvidence::score(rawScore,
+                ctx.evidence.evidence(seedQuery, tea, targetTea.L, qStart, tStart, backtrace)) : rawScore;
+            const double eval = ctx.calibrated ? evalue(score) : std::numeric_limits<double>::infinity();
+            if (eval > par.evalThr) return false;
+            result = Matcher::result_t(targetAA.getDbKey(), score, qCov, tCov, seqId, eval, span,
+                qStart, qEnd, queryAA.L, tStart, tEnd, targetAA.L, backtrace);
+            return true;
+        }
+
+        double evalue(double score) const {
+            const auto &par = ctx.par;
+            return computeEvalue(score, ctx.searchSpace, par.loglinearM * lnTen, par.loglinearMHigh * lnTen,
+                                 par.loglinearBreakpoint, par.loglinearC * lnTen, par.pFP);
+        }
+
+        bool exactAlign(const char *tea, Matcher::result_t &result) {
+            ++exactTried;
+            const auto &par = ctx.par;
+            if (!exact) exact.reset(new TeaSmithWaterman(par.maxSeqLen, ctx.teaMatrix.alphabetSize,
+                par.compBiasCorrection, par.compBiasCorrectionScale, &ctx.aaMatrix, &ctx.teaMatrix));
+            if (!exactReady) {
+                exact->ssw_init(&queryAA, &queryTea, ctx.tinyAA.data(), ctx.tinyTea.data(), &ctx.aaMatrix);
+                exactReady = true;
+            }
+            return doTeaAlign(*exact, targetAA, targetTea, queryTea.L, targetTea.L, ctx.searchSpace,
+                par.loglinearM * lnTen, par.loglinearMHigh * lnTen, par.loglinearBreakpoint,
+                par.loglinearC * lnTen, par.pFP, ctx.calibrated, false,
+                par.seedCorrection ? &ctx.evidence : nullptr, seedQuery, maxEvidence,
+                tea, result, backtrace, par) == 0;
+        }
+
+        void mapAA(DBReader<DBKeyType> &database, Sequence &sequence, DBKeyType key,
+                   unsigned int length) const {
+            const auto id = database.getId(key);
+            if (id == DB_ENTRY_NOT_FOUND || database.getSeqLen(id) != length) {
+                Debug(Debug::ERROR) << "Linclust2 TEA/AA sequence key or length mismatch for " << key << "\n";
+                EXIT(EXIT_FAILURE);
+            }
+            sequence.mapSequence(id, key, database.getData(id, thread), length);
+        }
+
+        SteamClusterAlignment &ctx;
+        unsigned int thread;
+        Sequence queryTea, queryAA, targetTea, targetAA;
+        std::unique_ptr<BlockAligner> banded;
+        std::unique_ptr<TeaSmithWaterman> exact;
+        bool exactReady = false;
+        unsigned short memberDiagonal = 0;
+        double const lnTen = 2.302585092994046;
+        size_t ungappedAccepted = 0, bandedTried = 0, bandedAccepted = 0, exactTried = 0;
+        AlignmentSeedEvidence::Query seedQuery;
+        double maxEvidence = 0.0;
+        std::string backtrace;
+    };
+
+    const LocalParameters &par;
+    bool calibrated;
+    SubstitutionMatrix teaMatrix, aaMatrix;
+    std::vector<int8_t> tinyTea, tinyAA;
+    std::unique_ptr<DBReader<DBKeyType>> queryAA, memberAA;
+    double searchSpace;
+    AlignmentSeedEvidence evidence;
+    std::atomic<size_t> ungappedAccepted{0}, bandedTried{0}, bandedAccepted{0}, exactTried{0};
+};
+
+} // namespace
+
+PairedClusterAlignment *LocalParameters::createPairedClusterAlignment() {
+    return new SteamClusterAlignment(*this);
+}
+
 int teaalign(int argc, const char **argv, const Command &command) {
     LocalParameters &par = LocalParameters::getLocalInstance();
     par.parseParameters(argc, argv, command, true, 0, MMseqsParameter::COMMAND_ALIGN);
@@ -264,19 +524,7 @@ int teaalign(int argc, const char **argv, const Command &command) {
         Debug(Debug::ERROR) << "MATCHA substitution matrix (--matcha) is required\n";
         EXIT(EXIT_FAILURE);
     }
-    std::string teaMatData;
-    for (size_t i = 0; i < par.substitutionMatrices.size(); i++) {
-        if (par.substitutionMatrices[i].name == par.teaMatrixFile) {
-            std::string matrixData((const char *)par.substitutionMatrices[i].subMatData,
-                                   par.substitutionMatrices[i].subMatDataLen);
-            char *serialized = BaseMatrix::serialize(par.substitutionMatrices[i].name, matrixData);
-            teaMatData.assign(serialized);
-            free(serialized);
-            break;
-        }
-    }
-    const char *teaMatSource = teaMatData.empty() ? par.teaMatrixFile.c_str() : teaMatData.c_str();
-    SubstitutionMatrix subMatTea(teaMatSource, par.teaScale, par.scoreBias);
+    SubstitutionMatrix subMatTea(teaMatrixSource(par).c_str(), par.teaScale, par.scoreBias);
 
     // AA substitution matrix (from --sub-mat, weighted by --aa-weight)
     float aaFactor = par.teaWeight;
