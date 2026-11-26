@@ -150,6 +150,7 @@ LocalParameters::LocalParameters() :
 
     // Upstream clustering serializes these base lists for its child commands.
     align = teaalign;
+    align2clust = combineList(align2clust, teaalign);
     rescorediagonal = tearescorediagonal;
     clusterworkflow = combineList(clusterworkflow, teaalign);
     clusterworkflow = combineList(clusterworkflow, {&PARAM_UNGAPPED_TEA_AA});
@@ -269,6 +270,13 @@ void LocalParameters::configureClustering(bool linear) {
         Debug(Debug::ERROR) << "--matcha is required for STEAM clustering\n";
         EXIT(EXIT_FAILURE);
     }
+    if (linclustVersion == LINCLUST_VERSION2) {
+        if (!PARAM_KMER_PER_SEQ.wasSet) kmersPerSequence = 21;
+        if (linear && !PARAM_K.wasSet && !PARAM_SPACED_KMER_PATTERN.wasSet) {
+            kmerSize = CLUST_LINEAR_DEFAULT_K;
+        }
+    }
+
     // Linclust selects its own k for the reduced alphabet; it must not inherit
     // search's k5/k6 selection, even when the caller enables spaced k-mers.
     if (spacedKmer && !linear) {

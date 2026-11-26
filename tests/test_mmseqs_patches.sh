@@ -3,7 +3,8 @@
 set -euo pipefail
 patch_work=$(mktemp -d "${TMPDIR:-/tmp}/steam-patches.XXXXXX")
 mapfile -t patch_files < <(awk '/^diff --git / {sub(/^a\//, "", $3); print $3}' patches/*.patch | sort -u)
-git -C lib/mmseqs archive HEAD -- "${patch_files[@]}" | tar -x -C "$patch_work"
+mapfile -t existing_files < <(git -C lib/mmseqs ls-tree --name-only -r HEAD -- "${patch_files[@]}")
+git -C lib/mmseqs archive HEAD -- "${existing_files[@]}" | tar -x -C "$patch_work"
 for patch in patches/*.patch; do
     git -C "$patch_work" apply "$PWD/$patch"
 done

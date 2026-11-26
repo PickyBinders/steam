@@ -1,0 +1,331 @@
+diff --git a/src/alignment/BlockAligner.cpp b/src/alignment/BlockAligner.cpp
+index ef2636e6..a44fff1a 100644
+--- a/src/alignment/BlockAligner.cpp
++++ b/src/alignment/BlockAligner.cpp
+@@ -10,15 +10,23 @@
+ #define MIN_SIZE 32
+ 
+ #include <algorithm>
++#include <cmath>
++
++static size_t boundedBlockSize(size_t length, size_t cap) {
++    size_t size = MIN_SIZE;
++    while (size <= length && size < cap) size *= 2;
++    return size;
++}
+ 
+ BlockAligner::BlockAligner(
+     int dbtype,
+     size_t maxSequenceLength,
+     BaseMatrix *m, SubstitutionMatrix::FastMatrix* fastMatrix, EvalueComputation * evaluer,
+     bool compBiasCorrection, float compBiasCorrectionScale,
+-    int8_t gapOpen, int8_t gapExtend
++    int8_t gapOpen, int8_t gapExtend, BaseMatrix *companionSubMat
+ ) : 
+     maxSequenceLength(maxSequenceLength),
++    companionSubMat(companionSubMat),
+     gaps({gapOpen, gapExtend}),
+     compBiasCorrection(compBiasCorrection),
+     compBiasCorrectionScale(compBiasCorrectionScale),
+@@ -26,7 +34,7 @@ BlockAligner::BlockAligner(
+     subMat((SubstitutionMatrix*) m),
+     fastMatrix(fastMatrix),
+     evaluer(evaluer) {
+-    range={MIN_SIZE, MAX_SIZE};
++    range = {MIN_SIZE, companionSubMat ? boundedBlockSize(maxSequenceLength, MAX_SIZE) : MAX_SIZE};
+     query = block_new_padded_aa(maxSequenceLength, range.max);
+     queryBias = block_new_pos_bias(maxSequenceLength, range.max);
+     queryRevNumSeq = new int8_t[maxSequenceLength];
+@@ -48,6 +56,19 @@ BlockAligner::BlockAligner(
+         Debug(Debug::ERROR) << "blockaligner for profile is not supported yet. \n";
+         EXIT(EXIT_FAILURE);
+     }
++    if (companionSubMat) {
++        queryPaired = block_new_padded_aa(maxSequenceLength, range.max);
++        targetPaired = block_new_padded_aa(maxSequenceLength, range.max);
++        companionMatrix = block_new_simple_aamatrix(1, -1);
++        for (int q = 0; q < companionSubMat->alphabetSize; ++q) {
++            for (int t = 0; t < companionSubMat->alphabetSize; ++t) {
++                block_set_aamatrix_num(companionMatrix, q, t, companionSubMat->subMatrix[q][t]);
++            }
++        }
++        queryCompanionRev.resize(maxSequenceLength);
++        targetCompanionRev.resize(maxSequenceLength);
++        targetPrimaryRev.resize(maxSequenceLength);
++    }
+     blockTrace = block_new_aa_trace_xdrop(maxSequenceLength, maxSequenceLength, range.max);
+     blockNoTrace = block_new_aa_xdrop(maxSequenceLength, maxSequenceLength, range.max);
+     cigar = block_new_cigar(maxSequenceLength, maxSequenceLength);
+@@ -72,6 +93,11 @@ BlockAligner::~BlockAligner() {
+         block_free_pos_bias(targetBias);
+         block_free_aamatrix(matrix);
+     }
++    if (companionSubMat) {
++        block_free_padded_aa(queryPaired);
++        block_free_padded_aa(targetPaired);
++        block_free_aamatrix(companionMatrix);
++    }
+     delete[] queryCompBias;
+     delete[] targetCompBias;
+     delete[] tmpCompBias;
+@@ -79,11 +105,28 @@ BlockAligner::~BlockAligner() {
+     delete[] queryCompBiasRev;
+ }
+ 
+-void BlockAligner::initQuery(Sequence* query){
++void BlockAligner::initQuery(Sequence* query, Sequence *companion) {
++    queryCompanion = companion;
+     currentQuery = query;
+     querySeq = query->getSeqData();
+     queryNumSeq = query->numSequence;
+     queryLength = query->L;
++    if (companion) {
++        std::reverse_copy(companion->numSequence, companion->numSequence + queryLength, queryCompanionRev.begin());
++        std::reverse_copy(queryNumSeq, queryNumSeq + queryLength, queryRevNumSeq);
++        std::fill_n(queryCompBias, queryLength, 0);
++        if (compBiasCorrection) {
++            SubstitutionMatrix::calcLocalAaBiasCorrection(subMat, queryNumSeq, queryLength, tmpCompBias, 1.0);
++            for (int i = 0; i < queryLength; ++i) queryCompBias[i] = std::round(tmpCompBias[i]);
++            if (compBiasCorrectionScale != 0.0f) {
++                SubstitutionMatrix::calcLocalAaBiasCorrection(companionSubMat, companion->numSequence,
++                    queryLength, tmpCompBias, compBiasCorrectionScale);
++                for (int i = 0; i < queryLength; ++i) queryCompBias[i] += std::round(tmpCompBias[i]);
++            }
++        }
++        std::reverse_copy(queryCompBias, queryCompBias + queryLength, queryCompBiasRev);
++        return;
++    }
+     //memset queryRevNumSeq
+     memset(queryRevNumSeq, 0, maxSequenceLength * sizeof(int8_t));
+     // reset per call so a compBias-off run never reuses the previous query's values
+@@ -101,6 +144,49 @@ void BlockAligner::initQuery(Sequence* query){
+     }
+ }
+ 
++int BlockAligner::pairedScore(unsigned int q, const Sequence *targetPrimary, unsigned int t) const {
++    return subMat->subMatrix[queryNumSeq[q]][targetPrimary->numSequence[t]]
++        + companionSubMat->subMatrix[queryCompanion->numSequence[q]][targetCompanion->numSequence[t]]
++        + queryCompBias[q];
++}
++
++DistanceCalculator::LocalAlignment BlockAligner::pairedUngapped(const Sequence *target, unsigned short encodedDiagonal) const {
++        DistanceCalculator::LocalAlignment best;
++        const int qLen = queryLength, tLen = target->L;
++        for (int diag = static_cast<int>(encodedDiagonal) - 65536; diag < qLen; diag += 65536) {
++            if (diag <= -tLen) continue;
++            const int q = std::max(diag, 0), t = std::max(-diag, 0);
++            const int span = std::min(qLen - q, tLen - t);
++            auto alignment = DistanceCalculator::bestLocalDiagonal(span,
++                [&](unsigned int i) { return pairedScore(q + i, target, t + i); });
++            if (alignment.score > best.score) {
++                best = alignment;
++                best.diagonal = diag;
++                best.distToDiagonal = std::abs(diag);
++            }
++        }
++        return best;
++    }
++
++void BlockAligner::extendBanded(const uint8_t *primaryQ, const uint8_t *primaryT,
++    const uint8_t *companionQ, const uint8_t *companionT, int16_t *qBias, int tStart,
++    int qLen, int tLen, int32_t xDrop) {
++    const SizeRange runRange = {range.min, companionQ
++        ? boundedBlockSize(std::max(qLen, tLen), range.max) : range.max};
++    block_set_bytes_padded_aa_numsequence(query, primaryQ, qLen, runRange.max);
++    block_set_bytes_padded_aa_numsequence(target, primaryT, tLen, runRange.max);
++    block_set_pos_bias(queryBias, qBias, qLen);
++    block_set_pos_bias(targetBias, targetCompBias + tStart, tLen);
++    if (companionQ) {
++        block_set_bytes_padded_aa_numsequence(queryPaired, companionQ, qLen, runRange.max);
++        block_set_bytes_padded_aa_numsequence(targetPaired, companionT, tLen, runRange.max);
++        block_align_3di_aa_trace_xdrop(blockTrace, query, queryPaired, queryBias,
++            target, targetPaired, targetBias, matrix, companionMatrix, gaps, runRange, xDrop);
++    } else {
++        block_align_aa_trace_xdrop_posbias(blockTrace, query, queryBias, target, targetBias, matrix, gaps, range, xDrop);
++    }
++}
++
+ // note: traceback cigar string will be reversed, but UngappedAln_res will contain correct start and end positions
+ s_align BlockAligner::gappedLocalAlign(
+     Sequence* currentTarget,
+@@ -358,14 +444,10 @@ s_align BlockAligner::gappedLocalAlignForward(
+     int fqueryStartPos = qIdx;
+     int ftargetAlnLen = tLen - tIdx;
+     int ftargetStartPos = tIdx;
+-    block_set_bytes_padded_aa_numsequence(query, (uint8_t*)(qNum + fqueryStartPos), fqueryAlnLen, range.max);
+-    block_set_bytes_padded_aa_numsequence(target, (uint8_t*)(tNum + ftargetStartPos), ftargetAlnLen, range.max);
+-    
+-    // PosBias
+-    block_set_pos_bias(queryBias, queryCompBias + fqueryStartPos, fqueryAlnLen);
+-    block_set_pos_bias(targetBias, targetCompBias + ftargetStartPos, ftargetAlnLen);
+-
+-    block_align_aa_trace_xdrop_posbias(blockTrace, query, queryBias, target, targetBias, matrix, gaps, range, x_drop);
++    extendBanded(qNum + fqueryStartPos, tNum + ftargetStartPos,
++        queryCompanion ? queryCompanion->numSequence + fqueryStartPos : nullptr,
++        targetCompanion ? targetCompanion->numSequence + ftargetStartPos : nullptr,
++        queryCompBias + fqueryStartPos, ftargetStartPos, fqueryAlnLen, ftargetAlnLen, x_drop);
+     res = block_res_aa_trace_xdrop(blockTrace);
+ 
+     // a failed x-drop yields SIZE_MAX indices, so validate before tracing back from an invalid cell
+@@ -407,22 +489,23 @@ s_align BlockAligner::gappedLocalAlignBackward(
+     int fqueryStartPos = qLen - fqueryAlnLen;
+     int ftargetAlnLen = tIdx +1;
+     int ftargetStartPos = tLen - ftargetAlnLen;
+-    int8_t* targetRevNumSeq = new int8_t[tLen];
+-	std::reverse_copy(tNum, tNum + tLen, targetRevNumSeq);
+-
+-    block_set_bytes_padded_aa_numsequence(query, (uint8_t*)(queryRevNumSeq + fqueryStartPos), fqueryAlnLen, range.max);
+-    block_set_bytes_padded_aa_numsequence(target, (uint8_t*)(targetRevNumSeq + ftargetStartPos), ftargetAlnLen, range.max);
+-    
+-    //PosBias
+-    block_set_pos_bias(queryBias, queryCompBiasRev + fqueryStartPos, fqueryAlnLen);
+-    block_set_pos_bias(targetBias, targetCompBias + ftargetStartPos, ftargetAlnLen);
+-
+-    block_align_aa_trace_xdrop_posbias(blockTrace, query, queryBias, target, targetBias, matrix, gaps, range, x_drop);
++    std::vector<uint8_t> reverseStorage;
++    if (!targetCompanion) reverseStorage.resize(tLen);
++    uint8_t *targetRev = targetCompanion ? targetPrimaryRev.data() : reverseStorage.data();
++    std::reverse_copy(tNum, tNum + tLen, targetRev);
++    if (targetCompanion) {
++        const auto *seq = targetCompanion->numSequence;
++        std::reverse_copy(seq, seq + tLen, targetCompanionRev.begin());
++    }
++    extendBanded(reinterpret_cast<uint8_t*>(queryRevNumSeq) + fqueryStartPos,
++        targetRev + ftargetStartPos,
++        queryCompanion ? queryCompanionRev.data() + fqueryStartPos : nullptr,
++        targetCompanion ? targetCompanionRev.data() + ftargetStartPos : nullptr,
++        queryCompBiasRev + fqueryStartPos, ftargetStartPos, fqueryAlnLen, ftargetAlnLen, x_drop);
+     res = block_res_aa_trace_xdrop(blockTrace);
+     // Validate BEFORE tracing back; free the reversed target on the failure path (was leaked).
+     if (res.query_idx == SIZE_MAX || res.reference_idx == SIZE_MAX
+         || res.query_idx == 0 || res.reference_idx == 0) {
+-        delete[] targetRevNumSeq;
+         local_aln.score1 = 0.0f;
+         local_aln.qCov = 0.0f;
+         local_aln.tCov = 0.0f;
+@@ -432,7 +515,6 @@ s_align BlockAligner::gappedLocalAlignBackward(
+ 
+     block_cigar_aa_trace_xdrop(blockTrace, res.query_idx, res.reference_idx, cigar);
+     local_aln.score1 = res.score;
+-    delete[] targetRevNumSeq;
+     return local_aln;
+ }
+ 
+@@ -562,7 +644,8 @@ BlockAligner::bandedalign(
+     std::string& backtrace,
+     int xdrop,
+     float covThr,
+-    int covMode
++    int covMode,
++    int *rawScoreOut
+ ) {
+     //Forward
+     s_align local_aln = {};   // zero every field so failure returns never expose garbage (e.g. identicalAACnt)
+@@ -632,16 +715,18 @@ BlockAligner::bandedalign(
+     local_aln.identicalAACnt = local_aln_Forward.identicalAACnt + local_aln_Backward.identicalAACnt;
+     if (backwardStitched) {
+         // Seed cell is counted by both forward and backward extensions; subtract one copy.
+-        const int seedScore = subMat->subMatrix[currentQuery->numSequence[qIdx]][currentTarget->numSequence[tIdx]]
+-                            + (compBiasCorrection ? queryCompBias[qIdx] : 0);
++        const int seedScore = queryCompanion ? pairedScore(qIdx, currentTarget, tIdx)
++            : subMat->subMatrix[currentQuery->numSequence[qIdx]][currentTarget->numSequence[tIdx]]
++                + (compBiasCorrection ? queryCompBias[qIdx] : 0);
+         rawScore -= seedScore;
+         local_aln.identicalAACnt -= 1;
+     }
+     
+     float qcov = SmithWaterman::computeCov(local_aln.qStartPos1, local_aln.qEndPos1, currentQuery->L);
+     float tcov = SmithWaterman::computeCov(local_aln.dbStartPos1, local_aln.dbEndPos1, currentTarget->L);
+-    double evalue = evaluer->computeEvalue(rawScore, currentQuery->L);
+-    int bitScore = static_cast<int>(evaluer->computeBitScore(rawScore) + 0.5);
++    if (rawScoreOut) *rawScoreOut = rawScore;
++    double evalue = rawScoreOut ? 0.0 : evaluer->computeEvalue(rawScore, currentQuery->L);
++    int bitScore = rawScoreOut ? 0 : static_cast<int>(evaluer->computeBitScore(rawScore) + 0.5);
+     
+     local_aln.qCov = qcov;
+     local_aln.tCov = tcov;
+diff --git a/src/alignment/BlockAligner.h b/src/alignment/BlockAligner.h
+index 8b4e3c39..0642cb3e 100644
+--- a/src/alignment/BlockAligner.h
++++ b/src/alignment/BlockAligner.h
+@@ -2,6 +2,8 @@
+ #define BLOCKALIGNER_H
+ 
+ #include "block_aligner.h"
++#include <vector>
++#include "DistanceCalculator.h"
+ #include "StripedSmithWaterman.h"
+ 
+ class EvalueComputation;
+@@ -13,12 +15,14 @@ public:
+         size_t maxSequenceLength,
+         BaseMatrix *m, SubstitutionMatrix::FastMatrix* fastMatrix, EvalueComputation * evaluer,
+         bool compBiasCorrection, float compBiasCorrectionScale,
+-        int8_t gapOpen, int8_t gapExtend
++        int8_t gapOpen, int8_t gapExtend, BaseMatrix *companionMatrix = nullptr
+     );
+ 
+     ~BlockAligner();
+ 
+-    void initQuery(Sequence* query);
++    void initQuery(Sequence* query, Sequence *companion = nullptr);
++    void setTargetCompanion(Sequence *companion) { targetCompanion = companion; }
++    DistanceCalculator::LocalAlignment pairedUngapped(const Sequence *target, unsigned short diagonal) const;
+ 
+     typedef struct UngappedAln_res {
+         int bitScore;
+@@ -80,7 +84,8 @@ public:
+         std::string& backtrace,
+         int xdrop,
+         float covThr,
+-        int covMode
++        int covMode,
++        int *rawScore = nullptr
+     );
+ 
+     s_align bandedalignBackward(
+@@ -113,6 +118,17 @@ private:
+     PosBias* queryBias;
+     PosBias* targetBias;
+     AAMatrix* matrix;
++    BaseMatrix *companionSubMat;
++    Sequence *queryCompanion = nullptr;
++    Sequence *targetCompanion = nullptr;
++    PaddedBytes *queryPaired = nullptr;
++    PaddedBytes *targetPaired = nullptr;
++    AAMatrix *companionMatrix = nullptr;
++    std::vector<uint8_t> queryCompanionRev, targetCompanionRev, targetPrimaryRev;
++    int pairedScore(unsigned int q, const Sequence *target, unsigned int t) const;
++    void extendBanded(const uint8_t *primaryQ, const uint8_t *primaryT,
++                      const uint8_t *companionQ, const uint8_t *companionT,
++                      int16_t *qBias, int tStart, int qLen, int tLen, int32_t xDrop);
+     BlockHandle blockTrace;
+     BlockHandle blockNoTrace;
+     Cigar* cigar;
+diff --git a/src/alignment/DistanceCalculator.h b/src/alignment/DistanceCalculator.h
+index b6f2265c..cb5f3299 100644
+--- a/src/alignment/DistanceCalculator.h
++++ b/src/alignment/DistanceCalculator.h
+@@ -179,6 +179,13 @@ public:
+                                                               const T *seq2,
+                                                               const unsigned int length,
+                                                               const char **subMat) {
++        return bestLocalDiagonal(length, [&](unsigned int pos) {
++            return subMat[static_cast<unsigned char>(seq1[pos])][static_cast<unsigned char>(seq2[pos])];
++        });
++    }
++
++    template<typename Score>
++    static LocalAlignment bestLocalDiagonal(unsigned int length, const Score &scoreAt) {
+         int maxScore = 0;
+         int maxEndPos = 0;
+         int maxStartPos = 0;
+@@ -186,7 +193,7 @@ public:
+ //        int maxMinPos = 0;
+         int score = 0;
+         for(unsigned int pos = 0; pos < length; pos++){
+-            int curr = subMat[static_cast<unsigned char>(seq1[pos])][static_cast<unsigned char>(seq2[pos])];
++            const int curr = scoreAt(pos);
+             score = curr  + score;
+             const bool isMinScore = (score <= 0);
+             score =  (isMinScore) ? 0 : score;

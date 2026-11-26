@@ -1,5 +1,5 @@
 diff --git a/src/prefiltering/Prefiltering.cpp b/src/prefiltering/Prefiltering.cpp
-index 92d957f..78bd087 100644
+index d38c578a..a2f5952d 100644
 --- a/src/prefiltering/Prefiltering.cpp
 +++ b/src/prefiltering/Prefiltering.cpp
 @@ -13,6 +13,10 @@
@@ -28,7 +28,7 @@ index 92d957f..78bd087 100644
  
      // init the substitution matrices
      switch (querySeqType & Parameters::DBTYPE_MASK) {
-@@ -564,6 +576,65 @@ void Prefiltering::getIndexTable(int split, size_t dbFrom, size_t dbSize) {
+@@ -582,6 +594,65 @@ void Prefiltering::getIndexTable(int split, size_t dbFrom, size_t dbSize) {
          tdbr->remapData();
          Debug(Debug::INFO) << "Time for index table init: " << timer.lap() << "\n";
      }
@@ -94,7 +94,7 @@ index 92d957f..78bd087 100644
  }
  
  bool Prefiltering::isSameQTDB() {
-@@ -811,7 +882,8 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
+@@ -829,7 +900,8 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
          QueryMatcher matcher(indexTable, sequenceLookup, kmerSubMat,  ungappedSubMat,
                               kmerThr, kmerSize, dbSize, std::max(tdbr->getMaxSeqLen(),qdbr->getMaxSeqLen()), maxResListLen, aaBiasCorrection, aaBiasCorrectionScale,
                               diagonalScoring, minDiagScoreThr, takeOnlyBestKmer, targetSeqType==Parameters::DBTYPE_NUCLEOTIDES,
@@ -105,7 +105,7 @@ index 92d957f..78bd087 100644
          if (seq.profile_matrix != NULL) {
              matcher.setProfileMatrix(seq.profile_matrix);
 diff --git a/src/prefiltering/Prefiltering.h b/src/prefiltering/Prefiltering.h
-index fa5830c..b03ca95 100644
+index a7ec03c8..bc3d86a7 100644
 --- a/src/prefiltering/Prefiltering.h
 +++ b/src/prefiltering/Prefiltering.h
 @@ -79,6 +79,9 @@ private:
@@ -127,10 +127,10 @@ index fa5830c..b03ca95 100644
      void printStatistics(const statistics_t &stats, std::list<int> **reslens,
                           unsigned int resLensSize, size_t empty, size_t maxResults);
 diff --git a/src/prefiltering/QueryMatcher.cpp b/src/prefiltering/QueryMatcher.cpp
-index 067e661..c746720 100644
+index c5fa2e80..5328eca4 100644
 --- a/src/prefiltering/QueryMatcher.cpp
 +++ b/src/prefiltering/QueryMatcher.cpp
-@@ -25,7 +25,8 @@ QueryMatcher::QueryMatcher(IndexTable *indexTable, SequenceLookup *sequenceLooku
+@@ -26,7 +26,8 @@ QueryMatcher::QueryMatcher(IndexTable *indexTable, SequenceLookup *sequenceLooku
                             unsigned int maxSeqLen, size_t maxHitsPerQuery, bool aaBiasCorrection, float aaBiasCorrectionScale,
                             bool diagonalScoring, unsigned int minDiagScoreThr, bool takeOnlyBestKmer, bool isNucleotide,
                             BaseMatrix *ungappedAlignmentSubMatAux,
@@ -140,7 +140,7 @@ index 067e661..c746720 100644
          : idx(indexTable->getAlphabetSize(), kmerSize), isNucleotide(isNucleotide), hook(NULL)
  {
      this->kmerSubMat = kmerSubMat;
-@@ -64,6 +65,7 @@ QueryMatcher::QueryMatcher(IndexTable *indexTable, SequenceLookup *sequenceLooku
+@@ -65,6 +66,7 @@ QueryMatcher::QueryMatcher(IndexTable *indexTable, SequenceLookup *sequenceLooku
      // needed for p-value calc.
      ungappedAlignment = NULL;
      ungappedAlignmentAux = NULL;
@@ -148,7 +148,7 @@ index 067e661..c746720 100644
      if (diagonalScoring) {
          // Look up remap tables from the Sequence registry (registered by downstream projects e.g. Foldseek)
          const Sequence::SeqAuxInfo *auxInfo = Sequence::getAuxInfo(targetSeqType);
-@@ -241,6 +243,9 @@ std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, unsigned
+@@ -273,6 +275,9 @@ std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, DBLocalId
  }
  
  size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
@@ -158,7 +158,7 @@ index 067e661..c746720 100644
      // go through the query sequence
      size_t kmerListLen = 0;
      size_t numMatches = 0;
-@@ -295,6 +300,10 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
+@@ -327,6 +332,10 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
  
          for (unsigned int kmerPos = 0; kmerPos < kmerElementSize; kmerPos++) {
              const IndexEntryLocal *entries = indexTable->getDBSeqList(index[kmerPos], &seqListSize);
@@ -169,7 +169,7 @@ index 067e661..c746720 100644
              // DEBUG
              //std::cout << seq->getDbKey() << std::endl;
              //idx.printKmer(index[kmerPos], kmerSize, kmerSubMat->num2aa);
-@@ -372,6 +381,9 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
+@@ -404,6 +413,9 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
      stats->querySeqLen = seq->L;
      stats->dbMatches   = overflowNumMatches + numMatches;
  
@@ -180,7 +180,7 @@ index 067e661..c746720 100644
  }
  
 diff --git a/src/prefiltering/QueryMatcher.h b/src/prefiltering/QueryMatcher.h
-index ed8d0ad..0de45d4 100644
+index 442255b7..b3772ba6 100644
 --- a/src/prefiltering/QueryMatcher.h
 +++ b/src/prefiltering/QueryMatcher.h
 @@ -58,7 +58,8 @@ public:
