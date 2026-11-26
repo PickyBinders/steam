@@ -34,6 +34,20 @@ SOFTWARE.
 #include "block_aligner.h"
 #include <iostream>
 
+namespace {
+// Max-plus prefix scan of gap scores across SIMD lanes. Each lane spans
+// segLen query residues; clamp penalties to the representable score range.
+template <int Shift>
+inline simd_int scanGaps(simd_int gaps, int64_t lanePenalty) {
+    gaps = scanGaps<Shift / 2>(gaps, lanePenalty);
+    const simd_int penalty = simdi16_set(std::min<int64_t>(INT16_MAX, lanePenalty * Shift));
+    return simdi16_max(gaps, simdui16_subs(simdi8_shiftl(gaps, 2 * Shift), penalty));
+}
+
+template <>
+inline simd_int scanGaps<0>(simd_int gaps, int64_t) { return gaps; }
+}
+
 TeaSmithWaterman::TeaSmithWaterman(size_t maxSequenceLength, int aaSize,
                                                bool aaBiasCorrection, float aaBiasCorrectionScale,
                                                SubstitutionMatrix * subAAMat, SubstitutionMatrix * subTeaMat)
@@ -1233,6 +1247,26 @@ std::pair<TeaSmithWaterman::alignment_end, TeaSmithWaterman::alignment_end> TeaS
 
             /* Load the next vH. */
             vH = simdi_load(pvHLoad + j);
+        }
+
+        // Opening a gap must cost at least extending it for linear carry propagation.
+        if (type == SUBSTITUTIONMATRIX && gap_open >= gap_extend) {
+            const simd_int localGaps = vF;
+            simd_int carry = simdi8_shiftl(vF, 2);
+            vH = simdi16_max(simdi_load(pvHStore), carry);
+            simdi_store(pvHStore, vH);
+            vMaxColumn = simdi16_max(vMaxColumn, vH);
+            // Preserve the common one-step exit before doing the scan.
+            if (!simdi8_movemask(simdi16_gt(simdui16_subs(carry, vGapE),
+                                           simdui16_subs(vH, vGapO)))) goto end;
+            carry = simdi8_shiftl(scanGaps<VECSIZE_INT>(localGaps, int64_t(segLen) * gap_extend), 2);
+            for (j = 0; j < segLen; ++j) {
+                vH = simdi16_max(simdi_load(pvHStore + j), carry);
+                simdi_store(pvHStore + j, vH);
+                vMaxColumn = simdi16_max(vMaxColumn, vH);
+                carry = simdui16_subs(carry, vGapE);
+            }
+            goto end;
         }
 
         /* Lazy_F loop: has been revised to disallow adjecent insertion and then deletion, so don't update E(i, j), learn from SWPS3 */
