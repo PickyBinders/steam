@@ -16,6 +16,7 @@ versions fail configuration. Apply the complete set before compiling.
 | `0009-prefilter-diagonal-zero.patch` | Give unseen targets a separate sentinel in the double-hit filter. |
 | `0010-paired-linclust2.patch` | Route Linclust2 candidate diagonals and original-member checks through the paired alignment interface. Enable with `--linclust-version 2`. |
 | `0011-paired-banded-linclust2.patch` | Use the native diagonal and SIMD block extension with paired TEA and AA scores, with workspace sized to the sequences. |
+| `0012-paired-sequence-score-table.patch` | Look up joint TEA+AA substitution scores for sequence queries. |
 
 Patch `0006` depends on the bucket-filter interfaces in `0001` and the
 companion-AA interfaces in `0004`. Apply the complete series in filename order.
