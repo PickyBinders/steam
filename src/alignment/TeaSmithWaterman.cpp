@@ -123,10 +123,12 @@ TeaSmithWaterman::TeaSmithWaterman(size_t maxSequenceLength, int aaSize,
     // this is the same alphabet size for both, please change this todo
     profile->mat_aa                = new int8_t[std::max(maxSequenceLength, (size_t)aaSize) * aaSize * 2];
     profile->mat_tea                = new int8_t[std::max(maxSequenceLength, (size_t)aaSize) * aaSize * 2];
-    profile->rev_alignment_aa_profile = new int8_t[maxSequenceLength * Sequence::PROFILE_AA_SIZE];
-    profile->rev_alignment_tea_profile = new int8_t[maxSequenceLength * Sequence::PROFILE_AA_SIZE];
-    profile->alignment_aa_profile = new int8_t[maxSequenceLength * Sequence::PROFILE_AA_SIZE];
-    profile->alignment_tea_profile = new int8_t[maxSequenceLength * Sequence::PROFILE_AA_SIZE];
+    // Profile initialization also writes the neutral X row after the 20
+    // canonical rows, and reverse scoring traverses the complete alphabet.
+    profile->rev_alignment_aa_profile = new int8_t[maxSequenceLength * aaSize];
+    profile->rev_alignment_tea_profile = new int8_t[maxSequenceLength * aaSize];
+    profile->alignment_aa_profile = new int8_t[maxSequenceLength * aaSize];
+    profile->alignment_tea_profile = new int8_t[maxSequenceLength * aaSize];
     tmp_composition_bias   = new float[maxSequenceLength];
     /* array to record the largest score of each reference position */
     maxColumn = new uint8_t[maxSequenceLength*sizeof(uint32_t)];

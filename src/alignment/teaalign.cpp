@@ -94,6 +94,10 @@ static int doTeaAlign(TeaSmithWaterman &teaSW,
         par.gapOpen.values.aminoacid(), par.gapExtend.values.aminoacid(),
         querySeqLen / 2);
 
+    if (teaSW.isProfileSearch() && (align.score1 == 0 || align.qEndPos1 < 0 || align.dbEndPos1 < 0)) {
+        return -1;
+    }
+
     bool hasLowerCoverage = !(Util::hasCoverage(par.covThr, par.covMode, align.qCov, align.tCov));
     if (hasLowerCoverage) {
         return -1;
@@ -445,8 +449,22 @@ int teaalign(int argc, const char **argv, const Command &command) {
     LocalParameters &par = LocalParameters::getLocalInstance();
     par.parseParameters(argc, argv, command, true, 0, MMseqsParameter::COMMAND_ALIGN);
 
-    const bool calibrated = par.validateCalibration();
-    const bool seedEnabled = par.seedCorrection;
+    const bool profileQuery = Parameters::isEqualDbtype(FileUtil::parseDbType(
+        PrefilteringIndexReader::dbPathWithoutIndex(par.db1).c_str()), Parameters::DBTYPE_HMM_PROFILE);
+    if (profileQuery) {
+        if (par.PARAM_TEA_WEIGHT.wasSet || par.PARAM_TEA_SCALE.wasSet ||
+            (par.PARAM_SEED_CORRECTION.wasSet && par.seedCorrection) ||
+            (par.PARAM_E.wasSet && par.evalThr != std::numeric_limits<double>::infinity()) ||
+            par.seqIdThr != 0.0f || par.minTfident != 0.0f) {
+            Debug(Debug::ERROR) << "Paired profile alignment uses preweighted rows and uncalibrated scores; "
+                               << "sequence weighting, seed correction, E-value and identity filters do not apply\n";
+            EXIT(EXIT_FAILURE);
+        }
+        par.evalThr = std::numeric_limits<double>::infinity();
+        Debug(Debug::INFO) << "Paired profile alignment: raw ranking scores, no sequence calibration or seed correction\n";
+    }
+    const bool calibrated = !profileQuery && par.validateCalibration();
+    const bool seedEnabled = !profileQuery && par.seedCorrection;
     AlignmentSeedEvidence seedModel;
     if (seedEnabled) {
         if (par.compBiasCorrectionScale != 0.0f) {
@@ -497,14 +515,18 @@ int teaalign(int argc, const char **argv, const Command &command) {
 
     const int queryTeaType = qTeaDbr->sequenceReader->getDbtype();
     const int queryAaType = qAaDbr->getDbtype();
-    if (!Parameters::isEqualDbtype(queryTeaType, Parameters::DBTYPE_AMINO_ACIDS) ||
-        !Parameters::isEqualDbtype(queryAaType, Parameters::DBTYPE_AMINO_ACIDS) ||
+    const int expectedQueryType = profileQuery ? Parameters::DBTYPE_HMM_PROFILE : Parameters::DBTYPE_AMINO_ACIDS;
+    if (!Parameters::isEqualDbtype(queryTeaType, expectedQueryType) ||
+        !Parameters::isEqualDbtype(queryAaType, expectedQueryType) ||
         !Parameters::isEqualDbtype(tTeaDbr.sequenceReader->getDbtype(), Parameters::DBTYPE_AMINO_ACIDS) ||
         !Parameters::isEqualDbtype(tAaDbr.getDbtype(), Parameters::DBTYPE_AMINO_ACIDS) ||
         qAaDbr->getSize() != qTeaDbr->sequenceReader->getSize() ||
         tAaDbr.getSize() != tTeaDbr.sequenceReader->getSize()) {
-        Debug(Debug::ERROR) << "STEAM alignment requires paired sequence databases\n";
+        Debug(Debug::ERROR) << "STEAM alignment requires matching paired queries and sequence targets\n";
         EXIT(EXIT_FAILURE);
+    }
+    if (profileQuery) {
+        par.maxSeqLen = std::max<size_t>(par.maxSeqLen, qTeaDbr->sequenceReader->getMaxSeqLen());
     }
 
     // Load prefilter results
@@ -654,7 +676,7 @@ int teaalign(int argc, const char **argv, const Command &command) {
                     const unsigned int dbKey = static_cast<unsigned int>(strtoul(buffer, NULL, 10));
                     data = Util::skipLine(data);
                     unsigned int targetId = tTeaDbr.sequenceReader->getId(dbKey);
-                    const bool isIdentity = (queryId == targetId && (par.includeIdentity || sameDB));
+                    const bool isIdentity = !profileQuery && (queryId == targetId && (par.includeIdentity || sameDB));
 
                     const int targetSeqLen = static_cast<int>(tTeaDbr.sequenceReader->getSeqLen(targetId));
 

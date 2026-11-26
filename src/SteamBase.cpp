@@ -120,7 +120,7 @@ std::vector<Command> steamCommands = {
                                    {"rescoreResult", DbType::ACCESS_MODE_OUTPUT, DbType::NEED_DATA, &DbValidator::alignmentDb }}},
         // Alignment
         {"align",        teaalign,     &localPar.teaalign,              COMMAND_ALIGNMENT,
-                "Align with combined TEA+AA dual scoring",
+                "Align paired sequences or preweighted profiles with combined TEA+AA scoring",
                 "steam align queryDB targetDB prefiltResult alnResult\n",
                 STEAM_AUTHOR,
                 "<i:queryDB> <i:targetDB> <i:prefiltResult> <o:alnResult>",
