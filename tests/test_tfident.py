@@ -1,4 +1,4 @@
-"""Sequence-only search, indexed inputs and TEA-identity clustering checks."""
+"""Sequence search, profile alignment, indexed inputs and TEA-identity clustering."""
 
 import argparse
 from pathlib import Path
@@ -208,8 +208,8 @@ def main():
         # Retired iteration controls must not silently become one-pass runs.
         rejected(steam, "search", db, db, work / "iterations", work / "iterations-tmp",
                  "--num-iterations", 2, message='Unrecognized parameter "--num-iterations"')
-        # Upstream utilities remain available, but STEAM must reject their
-        # profile databases rather than interpret binary PSSMs as sequences.
+        # The sequence-search workflow still rejects profiles. Low-level align
+        # accepts matching paired profiles, without interpreting PSSMs as sequences.
         for track, sequence_text in (("aa", aa), ("tea", tea)):
             stockholm = work / f"{track}.sto"
             stockholm.write_text(
@@ -229,8 +229,9 @@ def main():
         pref.write_bytes(b'\0')
         Path(str(pref) + '.index').write_text('0\t0\t1\n')
         Path(str(pref) + '.dbtype').write_bytes((7).to_bytes(4, 'little'))
-        rejected(steam, "align", work / "query", db, pref, work / "profile-align",
-                 "-e", "inf", message="STEAM alignment requires paired sequence databases")
+        profile_align = work / "profile-align"
+        run(steam, "align", work / "query", db, pref, profile_align, "-e", "inf", "--threads", 2)
+        assert records(profile_align) == {0: b'\0'}
 
         for k, pattern in ((5, '1101101'), (6, '1110111')):
             indexed = work / f'indexed-{k}'
@@ -250,7 +251,8 @@ def main():
                 assert records(before) == records(result), (k, selected_k)
         print("PASS: finite-E cascades retain alignment settings; "
               "cluster splits by tfident; easy-cluster passes it through; "
-              "profile/iteration inputs rejected; k5/k6 explicit and automatic index search unchanged")
+              "search profile/iteration inputs rejected; paired profile alignment accepted; "
+              "k5/k6 explicit and automatic index search unchanged")
 
 
 if __name__ == "__main__":
