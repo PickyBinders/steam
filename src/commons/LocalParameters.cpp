@@ -157,7 +157,8 @@ LocalParameters::LocalParameters() :
     teaalign = combineList(align, {&PARAM_TEA_WEIGHT, &PARAM_TEA_MAT, &PARAM_TEA_SCALE,
                                     &PARAM_LOGLINEAR_M, &PARAM_LOGLINEAR_M_HIGH,
                                     &PARAM_LOGLINEAR_BREAKPOINT, &PARAM_LOGLINEAR_C, &PARAM_P_FP,
-                                    &PARAM_SEED_CORRECTION, &PARAM_SEED_MODEL, &PARAM_SEED_PATTERN});
+                                    &PARAM_SEED_CORRECTION, &PARAM_SEED_MODEL, &PARAM_SEED_PATTERN,
+                                    &PARAM_S, &PARAM_K_SCORE, &PARAM_K});
 
     // tearescorediagonal = mmseqs rescorediagonal + align + TEA-specific params.
     tearescorediagonal = combineList(rescorediagonal, align);

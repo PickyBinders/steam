@@ -14,6 +14,7 @@
 #include "FileUtil.h"
 #include "FastSort.h"
 #include "QueryMatcher.h"
+#include "Prefiltering.h"
 #include "DatabaseDiversity.h"
 #include "AlignmentSeedEvidence.h"
 #include "seed_markov.txt.h"
@@ -453,18 +454,28 @@ int teaalign(int argc, const char **argv, const Command &command) {
         PrefilteringIndexReader::dbPathWithoutIndex(par.db1).c_str()), Parameters::DBTYPE_HMM_PROFILE);
     if (profileQuery) {
         if (par.PARAM_TEA_WEIGHT.wasSet || par.PARAM_TEA_SCALE.wasSet ||
-            (par.PARAM_SEED_CORRECTION.wasSet && par.seedCorrection) ||
-            (par.PARAM_E.wasSet && par.evalThr != std::numeric_limits<double>::infinity()) ||
             par.seqIdThr != 0.0f || par.minTfident != 0.0f) {
-            Debug(Debug::ERROR) << "Paired profile alignment uses preweighted rows and uncalibrated scores; "
-                               << "sequence weighting, seed correction, E-value and identity filters do not apply\n";
+            Debug(Debug::ERROR) << "Paired profile alignment uses preweighted rows; "
+                               << "sequence weighting and identity filters do not apply\n";
             EXIT(EXIT_FAILURE);
         }
-        par.evalThr = std::numeric_limits<double>::infinity();
-        Debug(Debug::INFO) << "Paired profile alignment: raw ranking scores, no sequence calibration or seed correction\n";
+        // Preserve ranking-only defaults; profile correction/filtering is opt-in.
+        if (!par.PARAM_E.wasSet) par.evalThr = std::numeric_limits<double>::infinity();
+        if (!par.PARAM_SEED_CORRECTION.wasSet) par.seedCorrection = false;
+        if (par.seedCorrection && !par.PARAM_SEED_PATTERN.wasSet) {
+            if (!par.PARAM_K.wasSet) par.kmerSize = 0;
+            par.spacedKmerPattern.clear();
+            par.resolveKmerPattern(par.db2);
+            par.seedPattern = par.spacedKmerPattern;
+        }
     }
-    const bool calibrated = !profileQuery && par.validateCalibration();
-    const bool seedEnabled = !profileQuery && par.seedCorrection;
+    const bool explicitFit = par.PARAM_LOGLINEAR_M.wasSet || par.PARAM_LOGLINEAR_M_HIGH.wasSet
+        || par.PARAM_LOGLINEAR_C.wasSet || par.PARAM_LOGLINEAR_BREAKPOINT.wasSet;
+    const bool calibrated = (!profileQuery || par.PARAM_E.wasSet || explicitFit) && par.validateCalibration();
+    const bool seedEnabled = par.seedCorrection;
+    if (profileQuery && calibrated)
+        Debug(Debug::INFO) << "Experimental profile E-values: applying the selected two-loglinear coefficients; "
+                           << "transfer to profile scores must be evaluated\n";
     AlignmentSeedEvidence seedModel;
     if (seedEnabled) {
         if (par.compBiasCorrectionScale != 0.0f) {
@@ -515,6 +526,10 @@ int teaalign(int argc, const char **argv, const Command &command) {
 
     const int queryTeaType = qTeaDbr->sequenceReader->getDbtype();
     const int queryAaType = qAaDbr->getDbtype();
+    const int profileSeedThreshold = profileQuery && seedEnabled
+        ? std::max(0, Prefiltering::getKmerThreshold(par.sensitivity, true,
+            DBReader<unsigned int>::getExtendedDbtype(queryTeaType) & Parameters::DBTYPE_EXTENDED_CONTEXT_PSEUDO_COUNTS,
+            par.kmerScore.values, std::count(par.seedPattern.begin(), par.seedPattern.end(), '1'))) : 0;
     const int expectedQueryType = profileQuery ? Parameters::DBTYPE_HMM_PROFILE : Parameters::DBTYPE_AMINO_ACIDS;
     if (!Parameters::isEqualDbtype(queryTeaType, expectedQueryType) ||
         !Parameters::isEqualDbtype(queryAaType, expectedQueryType) ||
@@ -662,7 +677,16 @@ int teaalign(int argc, const char **argv, const Command &command) {
 
                 teaSW.ssw_init(&qSeqAA, &qSeqTea, tinySubMatAA, tinySubMatTea, &subMatAA);
                 AlignmentSeedEvidence::Query seedQuery;
-                if (seedEnabled) seedQuery = seedModel.prepare(querySeqTea, querySeqLen);
+                if (seedEnabled) {
+                    seedQuery = profileQuery
+                        ? seedModel.prepareProfile(querySeqTea, querySeqLen, Sequence::PROFILE_READIN_SIZE,
+                            subMatTea.num2aa, profileSeedThreshold)
+                        : seedModel.prepare(querySeqTea, querySeqLen);
+                    if (profileQuery)
+                        Debug(Debug::INFO) << "Profile seed positions: query=" << queryKey
+                                           << " count=" << seedQuery.seedPositions
+                                           << " threshold=" << profileSeedThreshold << "\n";
+                }
 
                 const double maxSeedEvidence = seedEnabled && calibrated && std::isfinite(par.evalThr)
                     ? AlignmentSeedEvidence::maxEvidence(seedQuery) : 0.;

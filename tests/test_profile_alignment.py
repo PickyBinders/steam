@@ -71,11 +71,36 @@ def main():
             assert list(map(int, fields[4:10])) == [0, 47, 48, 3, 50 + len(gap), 54 + len(gap)], fields
             assert fields[10] == (b'24M3D24M' if gap else b'48M'), fields
             print(f'PASS paired profile score, coordinates and traceback with gap={len(gap)}', flush=True)
-        for options in [('-e', 1), ('--seed-correction', 1), ('--aa-weight', 3),
+        # Correction-only mode preserves ranking-only E-values. Deliberately
+        # bogus consensus metadata must not determine the supported words.
+        corrected = work / 'corrected'
+        run('align', query, target, prefilter, corrected, '--threads', 1,
+            '--seed-correction', 1, '-s', 10, '-a', 1, '-v', 1)
+        corrected_fields = rows(corrected)[0].rstrip(b'\0\n').split()
+        assert int(corrected_fields[1]) > int(fields[1]), (fields, corrected_fields)
+        assert corrected_fields[4:] == fields[4:]
+        assert math.isinf(float(corrected_fields[3]))
+        # Reuse sequence coefficients explicitly as an experimental filter.
+        calibrated = work / 'calibrated'
+        run('align', query, target, prefilter, calibrated, '--threads', 1,
+            '--seed-correction', 1, '-s', 10, '-e', 'inf', '-a', 1, '-v', 1)
+        calibrated_fields = rows(calibrated)[0].rstrip(b'\0\n').split()
+        score = float(calibrated_fields[1])
+        assert calibrated_fields[1] == corrected_fields[1]
+        expected_e = 10**(0.2839183138420103 - 0.005633978159801299*score
+                          + (0.005633978159801299-0.0014312498238873948)*max(0, score-586))
+        assert math.isclose(float(calibrated_fields[3]), expected_e, rel_tol=0.01)
+        for scale in (0.5, 2.):
+            filtered = work / f'filtered-{scale}'
+            run('align', query, target, prefilter, filtered, '--threads', 1,
+                '--seed-correction', 1, '-s', 10, '-e', expected_e*scale, '-a', 1, '-v', 1)
+            assert (rows(filtered)[0] != b'\0') == (scale > 1)
+        print('PASS profile correction, finite E-values and filtering', flush=True)
+        for options in [('--aa-weight', 3),
                         ('--min-seq-id', 0.5), ('--min-tfident', 0.5)]:
             log = run('align', query, target, prefilter, work / 'rejected', *options,
                       '--threads', 1, success=False)
-            assert 'sequence weighting, seed correction' in log, log
+            assert 'sequence weighting and identity' in log, log
         profile(query, tea, positive=-32)
         profile(Path(str(query) + '_aa'), aa, positive=-32)
         output = work / 'impossible'
