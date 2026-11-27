@@ -1,0 +1,106 @@
+diff --git a/src/prefiltering/Prefiltering.cpp b/src/prefiltering/Prefiltering.cpp
+index 8003ec0..a9fe4af 100644
+--- a/src/prefiltering/Prefiltering.cpp
++++ b/src/prefiltering/Prefiltering.cpp
+@@ -1088,6 +1088,9 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
+                              globalKmerCountTable != NULL
+                                  ? globalKmerCountTable->getOffsets() : NULL,
+                              globalBucketThreshold);
++        if (externalAuxScoring && seq.profile_matrix == NULL) {
++            matcher.preparePairedSequenceScores();
++        }
+ 
+         if (seq.profile_matrix != NULL) {
+             matcher.setProfileMatrix(seq.profile_matrix);
+diff --git a/src/prefiltering/QueryMatcher.cpp b/src/prefiltering/QueryMatcher.cpp
+index d4a1f5f..ed8ac38 100644
+--- a/src/prefiltering/QueryMatcher.cpp
++++ b/src/prefiltering/QueryMatcher.cpp
+@@ -118,10 +118,41 @@ QueryMatcher::~QueryMatcher(){
+     delete kmerGenerator;
+ }
+ 
++void QueryMatcher::preparePairedSequenceScores() {
++    const int teaSize = ungappedAlignmentSubMat->alphabetSize;
++    const int aaSize = externalAuxSubMat->alphabetSize;
++    const size_t states = teaSize * aaSize;
++    pairedScores.resize(states * states);
++    for (int qt = 0; qt < teaSize; ++qt) {
++        for (int qa = 0; qa < aaSize; ++qa) {
++            auto *row = pairedScores.data() + (qt * aaSize + qa) * states;
++            for (int tt = 0; tt < teaSize; ++tt) {
++                for (int ta = 0; ta < aaSize; ++ta) {
++                    const int score = ungappedAlignmentSubMat->subMatrix[qt][tt] + externalAuxSubMat->subMatrix[qa][ta];
++                    if (score < INT8_MIN || score > INT8_MAX) {
++                        pairedScores.clear();
++                        return;
++                    }
++                    row[tt * aaSize + ta] = static_cast<signed char>(score);
++                }
++            }
++        }
++    }
++}
++
+ std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, DBLocalId identityId, bool isNucleotide,
+                                                    Sequence *externalAuxQuerySeq) {
+     this->currentQuerySeq = querySeq;
+     this->externalAuxQuerySeq = externalAuxQuerySeq;
++    if (!pairedScores.empty()) {
++        const int aaSize = externalAuxSubMat->alphabetSize;
++        const int states = ungappedAlignmentSubMat->alphabetSize * aaSize;
++        pairedQueryRows.resize(std::min(querySeq->L, externalAuxQuerySeq->L));
++        for (size_t i = 0; i < pairedQueryRows.size(); ++i) {
++            const int state = querySeq->numSequence[i] * aaSize + externalAuxQuerySeq->numSequence[i];
++            pairedQueryRows[i] = pairedScores.data() + state * states;
++        }
++    }
+     querySeq->resetCurrPos();
+ //    std::cout << "Id: " << querySeq->getId() << std::endl;
+     memset(scoreSizes, 0, SCORE_RANGE * sizeof(unsigned int));
+@@ -494,6 +525,16 @@ unsigned int QueryMatcher::scoreExternalCombined(const unsigned char *queryPrima
+         std::min(targetPrimaryLen - targetOffset, targetAuxLen - targetOffset));
+     int score = 0;
+     int maxScore = 0;
++    if (!pairedQueryRows.empty()) {
++        const auto *rows = pairedQueryRows.data() + queryOffset;
++        const int aaSize = externalAuxSubMat->alphabetSize;
++        for (unsigned int pos = 0; pos < length; ++pos) {
++            const int target = targetPrimary[targetOffset + pos] * aaSize + targetAux[targetOffset + pos];
++            score = std::max(0, score + rows[pos][target]);
++            maxScore = std::max(maxScore, score);
++        }
++        return static_cast<unsigned int>(maxScore);
++    }
+     for (unsigned int pos = 0; pos < length; pos++) {
+         score += ungappedAlignmentSubMat->subMatrix[queryPrimary[queryOffset + pos]][targetPrimary[targetOffset + pos]];
+         score += externalAuxSubMat->subMatrix[queryAux[queryOffset + pos]][targetAux[targetOffset + pos]];
+diff --git a/src/prefiltering/QueryMatcher.h b/src/prefiltering/QueryMatcher.h
+index 2e05ed2..dcb4adc 100644
+--- a/src/prefiltering/QueryMatcher.h
++++ b/src/prefiltering/QueryMatcher.h
+@@ -6,6 +6,7 @@
+ #define MMSEQS_QUERYTEMPLATEMATCHEREXACTMATCH_H
+ 
+ #include <cstdlib>
++#include <vector>
+ #include "itoa.h"
+ #include "EvalueComputation.h"
+ #include "CacheFriendlyOperations.h"
+@@ -64,6 +65,7 @@ public:
+                  const size_t *globalKmerCounts = NULL,
+                  size_t globalBucketThreshold = 0);
+     ~QueryMatcher();
++    void preparePairedSequenceScores();
+ 
+     // returns result for the sequence
+     // identityId is the id of the identical sequence in the target database if there is any, DB_LOCAL_ID_INVALID otherwise
+@@ -176,6 +178,8 @@ protected:
+     BaseMatrix *externalAuxSubMat;
+     Sequence *currentQuerySeq;
+     Sequence *externalAuxQuerySeq;
++    std::vector<signed char> pairedScores;
++    std::vector<const signed char *> pairedQueryRows;
+ 
+     // score distribution of current query
+     unsigned int *scoreSizes;

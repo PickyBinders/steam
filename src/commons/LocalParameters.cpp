@@ -8,6 +8,39 @@
 #include <cmath>
 #include <iostream>
 
+std::vector<int> LocalParameters::getTeaOutputFormat(int format, const std::string &outfmt,
+        bool &needSequences, bool &needBacktrace, bool &needFullHeaders,
+        bool &needLookup, bool &needSource, bool &needTaxonomyMapping, bool &needTaxonomy) {
+    std::string baseFormat = outfmt;
+    std::vector<std::pair<size_t, int>> teaColumns;
+    if (format != FORMAT_ALIGNMENT_SAM && format != FORMAT_ALIGNMENT_HTML) {
+        const auto tokens = Util::split(outfmt, ",");
+        baseFormat.clear();
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            const auto &token = tokens[i];
+            int code = -1;
+            if (token == "tfident") code = OUTFMT_TFIDENT;
+            else if (token == "tpident") code = OUTFMT_TPIDENT;
+            else if (token == "qteaseq") code = OUTFMT_QTEASEQ;
+            else if (token == "tteaseq") code = OUTFMT_TTEASEQ;
+            else if (token == "qteaaln") code = OUTFMT_QTEAALN;
+            else if (token == "tteaaln") code = OUTFMT_TTEAALN;
+
+            if (i != 0) baseFormat += ',';
+            baseFormat += code < 0 ? token : "empty";
+            if (code >= 0) teaColumns.emplace_back(i, code);
+        }
+    }
+    auto codes = getOutputFormat(format, baseFormat, needSequences, needBacktrace,
+            needFullHeaders, needLookup, needSource, needTaxonomyMapping, needTaxonomy);
+    for (const auto &column : teaColumns) {
+        codes[column.first] = column.second;
+        needSequences = true;
+        needBacktrace |= column.second != OUTFMT_QTEASEQ && column.second != OUTFMT_TTEASEQ;
+    }
+    return codes;
+}
+
 LocalParameters::LocalParameters() :
         Parameters(),
         PARAM_TEA_WEIGHT(PARAM_TEA_WEIGHT_ID, "--aa-weight", "AA weight",
@@ -150,6 +183,7 @@ LocalParameters::LocalParameters() :
 
     // Upstream clustering serializes these base lists for its child commands.
     align = teaalign;
+    align2clust = combineList(align2clust, teaalign);
     rescorediagonal = tearescorediagonal;
     clusterworkflow = combineList(clusterworkflow, teaalign);
     clusterworkflow = combineList(clusterworkflow, {&PARAM_UNGAPPED_TEA_AA});
@@ -269,6 +303,13 @@ void LocalParameters::configureClustering(bool linear) {
         Debug(Debug::ERROR) << "--matcha is required for STEAM clustering\n";
         EXIT(EXIT_FAILURE);
     }
+    if (linclustVersion == LINCLUST_VERSION2) {
+        if (!PARAM_KMER_PER_SEQ.wasSet) kmersPerSequence = 21;
+        if (linear && !PARAM_K.wasSet && !PARAM_SPACED_KMER_PATTERN.wasSet) {
+            kmerSize = CLUST_LINEAR_DEFAULT_K;
+        }
+    }
+
     // Linclust selects its own k for the reduced alphabet; it must not inherit
     // search's k5/k6 selection, even when the caller enables spaced k-mers.
     if (spacedKmer && !linear) {

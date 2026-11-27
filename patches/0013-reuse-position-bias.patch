@@ -1,0 +1,42 @@
+diff --git a/lib/block-aligner/src/scores.rs b/lib/block-aligner/src/scores.rs
+index 126d864..32084f4 100644
+--- a/lib/block-aligner/src/scores.rs
++++ b/lib/block-aligner/src/scores.rs
+@@ -719,7 +719,11 @@ impl PosBias {
+     }
+ 
+     pub fn set_biases(&mut self, b: &[i16]) {
+-        self.bias.fill(0i16);
++        // Only the previous active span can contain nonzero values. Preserve
++        // zero padding without clearing the entire allocated capacity.
++        if b.len() < self.len {
++            self.bias[b.len() + 1..self.len + 1].fill(0i16);
++        }
+         self.bias[1..b.len() + 1].copy_from_slice(b);
+         self.len = b.len();
+     }
+@@ -739,6 +743,24 @@ impl PosBias {
+     }
+ }
+ 
++#[cfg(test)]
++mod pos_bias_tests {
++    use super::PosBias;
++
++    #[test]
++    fn reuse_preserves_values_and_zero_padding() {
++        let mut bias = PosBias::new(4096, 64);
++        for len in [4096, 13, 2053, 0, 4000, 11] {
++            let values: Vec<i16> = (0..len).map(|i| (i % 19) as i16 - 9).collect();
++            bias.set_biases(&values);
++            assert_eq!(bias.len(), len);
++            assert_eq!(&bias.bias[1..len + 1], values.as_slice());
++            assert_eq!(bias.bias[0], 0);
++            assert!(bias.bias[len + 1..].iter().all(|&value| value == 0));
++        }
++    }
++}
++
+ impl AAProfile {
+     fn set_all_core<const REV: bool>(&mut self, order: &[u8], scores: &[i8], left_shift: usize, right_shift: usize) {
+         #[repr(align(32))]

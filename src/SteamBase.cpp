@@ -12,6 +12,10 @@ static const char* STEAM_AUTHOR = "Janani Durairaj <janani.durairaj@unibas.ch>";
 void updateValidation() {}
 void (*validatorUpdate)(void) = updateValidation;
 
+static std::vector<int> easySearchInputs = {
+    Parameters::DBTYPE_FLATFILE, Parameters::DBTYPE_AMINO_ACIDS, Parameters::DBTYPE_INDEX_DB
+};
+
 std::vector<Command> steamCommands = {
         // Easy workflows
         {"easy-search",  easyteasearch,  &localPar.easyteasearchworkflow,  COMMAND_EASY,
@@ -22,7 +26,7 @@ std::vector<Command> steamCommands = {
                 "steam easy-search query_tea.fa query_aa.fa targetDB result.m8 tmp\n",
                 STEAM_AUTHOR,
                 "<i:queryTeaFasta> <i:queryAAFasta> <i:targetTeaFasta> <i:targetAAFasta>|<i:targetDB> <o:alignmentFile> <tmpDir>",
-                CITATION_MMSEQS2, {{"inputFasta", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA | DbType::VARIADIC, &DbValidator::flatfile },
+                CITATION_MMSEQS2, {{"inputFasta", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA | DbType::VARIADIC, &easySearchInputs },
                                    {"alignmentFile", DbType::ACCESS_MODE_OUTPUT, DbType::NEED_DATA, &DbValidator::flatfile },
                                    {"tmpDir", DbType::ACCESS_MODE_OUTPUT, DbType::NEED_DATA, &DbValidator::directory }}},
         {"easy-cluster",         easyteacluster,    &localPar.easyclusterworkflow,    COMMAND_EASY,

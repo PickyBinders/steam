@@ -70,8 +70,9 @@ def check_cascade_calibration(steam, work):
                       if line.startswith("prefilter ") and "pref_step" in line]
         caps = [int(re.search(r"--max-seqs (\d+)", line)[1]) for line in prefilters]
         assert caps == ([1000] if identity >= 0.7 else [100, 200, 1000]), log
-        assert all("--diag-score 1 " in line for line in prefilters), log
-        assert len(re.findall(r"Combined TEA\+AA ungapped diagonal scoring enabled \(AA weight 3(?:\.0+)?\)", log)) == len(prefilters), log
+        modes = [int(re.search(r"--diag-score (\d+)", line)[1]) for line in prefilters]
+        assert modes == ([1] if identity >= 0.7 else [0, 1, 1]), log
+        assert len(re.findall(r"Combined TEA\+AA ungapped diagonal scoring enabled \(AA weight 3(?:\.0+)?\)", log)) == sum(modes), log
         tsv = work / f"cascade-{cutoff}-{identity}.tsv"
         run(steam, "createtsv", db, db, output, tsv, "--threads", 2)
         members = [line.split("\t")[1] for line in tsv.read_text().splitlines()]
@@ -103,7 +104,7 @@ def check_cascade_calibration(steam, work):
                  "--matcha", custom_matrix, "--aa-weight", 4, "-e", "inf", "-c", 0,
                  "--threads", 2)
     log = result.stdout + result.stderr
-    assert len(re.findall(r"Combined TEA\+AA ungapped diagonal scoring enabled \(AA weight 4(?:\.0+)?\)", log)) == 3, log
+    assert len(re.findall(r"Combined TEA\+AA ungapped diagonal scoring enabled \(AA weight 4(?:\.0+)?\)", log)) == 2, log
     alignments = [line for line in log.splitlines() if line.startswith("align ")]
     for line in alignments:
         arguments = shlex.split(line)

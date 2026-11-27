@@ -63,9 +63,14 @@ public:
 
     LocalParameters();
     bool validateCalibration();
+
+    static std::vector<int> getTeaOutputFormat(int format, const std::string &outfmt,
+            bool &needSequences, bool &needBacktrace, bool &needFullHeaders,
+            bool &needLookup, bool &needSource, bool &needTaxonomyMapping, bool &needTaxonomy);
     void configurePrefilter() override;
     void configureUngappedScoring(bool combined);
     void configureClustering(bool linear = false) override;
+    PairedClusterAlignment *createPairedClusterAlignment() override;
     void resolveKmerPattern(const std::string &targetDb);
 
 private:
