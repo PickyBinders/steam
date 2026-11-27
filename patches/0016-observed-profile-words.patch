@@ -1,0 +1,134 @@
+diff --git a/src/prefiltering/ObservedProfileWords.h b/src/prefiltering/ObservedProfileWords.h
+new file mode 100644
+index 0000000..99512ac
+--- /dev/null
++++ b/src/prefiltering/ObservedProfileWords.h
+@@ -0,0 +1,55 @@
++#ifndef OBSERVED_PROFILE_WORDS_H
++#define OBSERVED_PROFILE_WORDS_H
++
++#include <cstdio>
++#include <cstdlib>
++#include <fstream>
++#include <map>
++#include <string>
++#include <utility>
++#include <vector>
++
++// Companion query.words: numeric query key, zero-based start, seven TEA symbols.
++// A missing key denotes an empty vocabulary, never profile-word expansion.
++class ObservedProfileWords {
++public:
++    using Words = std::vector<std::pair<size_t, std::string>>;
++
++    void load(const std::string &path) {
++        std::ifstream input(path);
++        if (!input) fail("Cannot read observed profile words");
++        read(input);
++    }
++
++    void read(std::istream &input) {
++        unsigned int key;
++        size_t position;
++        std::string span;
++        words.clear();
++        while (input >> key) {
++            if (!(input >> position >> span) || span.size() != 7
++                    || span.find_first_not_of("ACDEFGHIKLMNPQRSTVWY") != std::string::npos)
++                fail("Invalid observed profile word");
++            words[key].emplace_back(position, span);
++        }
++        if (!input.eof()) fail("Invalid observed profile word key");
++    }
++
++    const Words &get(unsigned int key, size_t length) const {
++        static const Words empty;
++        const auto found = words.find(key);
++        if (found == words.end()) return empty;
++        for (const auto &word : found->second)
++            if (length < 7 || word.first > length - 7)
++                fail("Observed word outside query profile");
++        return found->second;
++    }
++
++private:
++    std::map<unsigned int, Words> words;
++    static void fail(const char *message) {
++        std::fprintf(stderr, "%s\n", message);
++        std::exit(EXIT_FAILURE);
++    }
++};
++#endif
+diff --git a/src/prefiltering/QueryMatcher.cpp b/src/prefiltering/QueryMatcher.cpp
+index fabeb8d..3de11ac 100644
+--- a/src/prefiltering/QueryMatcher.cpp
++++ b/src/prefiltering/QueryMatcher.cpp
+@@ -3,6 +3,7 @@
+ #include <cstdlib>
+ #include <cstring>
+ #include "QueryMatcher.h"
++#include "ObservedProfileWords.h"
+ #include "FastSort.h"
+ #include "Util.h"
+ #include <algorithm>
+@@ -332,7 +333,39 @@ std::pair<hit_t*, size_t> QueryMatcher::matchQuery(Sequence *querySeq, DBLocalId
+     return queryResult;
+ }
+ 
++static bool observedProfileWords(Sequence *query, BaseMatrix *matrix, Indexer &indexer,
++                                 int k, std::vector<std::vector<size_t>> &indices) {
++    const char *path = std::getenv("STEAM_OBSERVED_PROFILE_WORDS");
++    if (path == nullptr) return false;
++    const unsigned char positions[] = {0, 1, 2, 4, 5, 6};
++    if (query->profile_matrix == nullptr || k != 6
++            || std::memcmp(query->getAAPosInSpacedPattern(), positions, 6) != 0) {
++        Debug(Debug::ERROR) << "Observed profile words require k6/1110111\n";
++        EXIT(EXIT_FAILURE);
++    }
++    // One load per prefilter process; local-static initialization is synchronized.
++    static const ObservedProfileWords vocabulary = [&] {
++        ObservedProfileWords words;
++        words.load(path);
++        return words;
++    }();
++    for (const auto &word : vocabulary.get(query->getDbKey(), query->L)) {
++        unsigned char symbols[6];
++        for (size_t i = 0; i < 6; ++i)
++            symbols[i] = matrix->aa2num[static_cast<unsigned char>(word.second[positions[i]])];
++        if (indices.size() <= word.first) indices.resize(word.first + 1);
++        indices[word.first].push_back(indexer.int2index(symbols));
++    }
++    for (auto &row : indices) {
++        std::sort(row.begin(), row.end());
++        row.erase(std::unique(row.begin(), row.end()), row.end());
++    }
++    return true;
++}
++
+ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
++    std::vector<std::vector<size_t>> observed;
++    const bool hasObserved = observedProfileWords(seq, kmerSubMat, idx, kmerSize, observed);
+     // The threshold and optional count table are computed once from the full
+     // target database by Prefiltering.  For target splits, local posting lists
+     // are still used for membership, while exclusion uses global counts.
+@@ -358,7 +391,7 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
+         for (int i = 0; i < kmerSize; i++){
+             biasCorrection += compositionBias[current_i + static_cast<short>(pos[i])];
+         }
+-        if (seq->kmerContainsX()) {
++        if (!hasObserved && seq->kmerContainsX()) {
+             indexTo = current_i;
+             indexPointer[current_i] = sequenceHits;
+             continue;
+@@ -373,7 +406,10 @@ size_t QueryMatcher::match(Sequence *seq, float *compositionBias) {
+         const size_t *index;
+         const size_t exactKmer = idx.int2index(kmer);
+         size_t kmerElementSize;
+-        if (takeOnlyBestKmer) {
++        if (hasObserved) {
++            kmerElementSize = current_i < observed.size() ? observed[current_i].size() : 0;
++            index = kmerElementSize ? observed[current_i].data() : nullptr;
++        } else if (takeOnlyBestKmer) {
+             kmerElementSize = 1;
+             index = &exactKmer;
+         } else {

@@ -17,6 +17,7 @@
 #include "Prefiltering.h"
 #include "DatabaseDiversity.h"
 #include "AlignmentSeedEvidence.h"
+#include "ObservedProfileWords.h"
 #include "seed_markov.txt.h"
 
 #include <cmath>
@@ -473,6 +474,16 @@ int teaalign(int argc, const char **argv, const Command &command) {
         || par.PARAM_LOGLINEAR_C.wasSet || par.PARAM_LOGLINEAR_BREAKPOINT.wasSet;
     const bool calibrated = (!profileQuery || par.PARAM_E.wasSet || explicitFit) && par.validateCalibration();
     const bool seedEnabled = par.seedCorrection;
+    const std::string wordsPath = PrefilteringIndexReader::dbPathWithoutIndex(par.db1) + ".words";
+    const bool hasObservedWords = profileQuery && seedEnabled && FileUtil::fileExists(wordsPath.c_str());
+    ObservedProfileWords observedWords;
+    if (hasObservedWords) {
+        if (par.seedPattern != "1110111") {
+            Debug(Debug::ERROR) << "Observed profile words require k6/1110111\n";
+            EXIT(EXIT_FAILURE);
+        }
+        observedWords.load(wordsPath);
+    }
     if (profileQuery && calibrated)
         Debug(Debug::INFO) << "Experimental profile E-values: applying the selected two-loglinear coefficients; "
                            << "transfer to profile scores must be evaluated\n";
@@ -678,10 +689,12 @@ int teaalign(int argc, const char **argv, const Command &command) {
                 teaSW.ssw_init(&qSeqAA, &qSeqTea, tinySubMatAA, tinySubMatTea, &subMatAA);
                 AlignmentSeedEvidence::Query seedQuery;
                 if (seedEnabled) {
-                    seedQuery = profileQuery
-                        ? seedModel.prepareProfile(querySeqTea, querySeqLen, Sequence::PROFILE_READIN_SIZE,
-                            subMatTea.num2aa, profileSeedThreshold)
-                        : seedModel.prepare(querySeqTea, querySeqLen);
+                    seedQuery = hasObservedWords
+                        ? seedModel.prepareObserved(querySeqLen, observedWords.get(queryKey, querySeqLen))
+                        : profileQuery
+                            ? seedModel.prepareProfile(querySeqTea, querySeqLen, Sequence::PROFILE_READIN_SIZE,
+                                subMatTea.num2aa, profileSeedThreshold)
+                            : seedModel.prepare(querySeqTea, querySeqLen);
                     if (profileQuery)
                         Debug(Debug::INFO) << "Profile seed positions: query=" << queryKey
                                            << " count=" << seedQuery.seedPositions

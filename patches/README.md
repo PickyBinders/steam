@@ -20,6 +20,7 @@ versions fail configuration. Apply the complete set before compiling.
 | `0013-reuse-position-bias.patch` | Clear only stale position biases when reusing sequence traceback buffers. |
 | `0014-paired-profile-prefilter.patch` | Score paired position-specific queries on a shared diagonal, with a profile-derived score bound. |
 | `0015-paired-profile-alphabet-guard.patch` | Require the full alphabet before decoding paired profile rows. |
+| `0016-observed-profile-words.patch` | Use exact observed TEA words from `query.words` for profile seeding. |
 
 Patch `0006` depends on the bucket-filter interfaces in `0001` and the
 companion-AA interfaces in `0004`. Apply the complete series in filename order.

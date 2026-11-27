@@ -268,6 +268,13 @@ void LocalParameters::configureUngappedScoring(bool combined) {
 }
 
 void LocalParameters::configurePrefilter() {
+    const std::string queryBase = PrefilteringIndexReader::dbPathWithoutIndex(db1);
+    const bool profileQuery = Parameters::isEqualDbtype(FileUtil::parseDbType(queryBase.c_str()), DBTYPE_HMM_PROFILE);
+    const std::string words = queryBase + ".words";
+    if (profileQuery && FileUtil::fileExists(words.c_str()))
+        setenv("STEAM_OBSERVED_PROFILE_WORDS", words.c_str(), 1);
+    else
+        unsetenv("STEAM_OBSERVED_PROFILE_WORDS");
     // Workflow children already receive a TEA --sub-mat and the separate AA
     // matrix. Do not reinterpret that TEA matrix as an AA scoring matrix.
     const char *configured = getenv("STEAM_PREFILTER_CONFIGURED");
@@ -276,9 +283,6 @@ void LocalParameters::configurePrefilter() {
         Debug(Debug::ERROR) << "--matcha is required for STEAM prefilter\n";
         EXIT(EXIT_FAILURE);
     }
-    const int queryType = FileUtil::parseDbType(
-        PrefilteringIndexReader::dbPathWithoutIndex(db1).c_str());
-    const bool profileQuery = Parameters::isEqualDbtype(queryType, DBTYPE_HMM_PROFILE);
     if (profileQuery) {
         if (!ungappedTeaAa || (PARAM_EXACT_KMER_MATCHING.wasSet && exactKmerMatching != 0)
                 || PARAM_TEA_WEIGHT.wasSet || PARAM_TEA_SCALE.wasSet) {
