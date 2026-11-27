@@ -1,0 +1,73 @@
+diff --git a/src/prefiltering/Prefiltering.cpp b/src/prefiltering/Prefiltering.cpp
+index a9fe4af..38bbfbd 100644
+--- a/src/prefiltering/Prefiltering.cpp
++++ b/src/prefiltering/Prefiltering.cpp
+@@ -251,6 +251,12 @@ Prefiltering::Prefiltering(const std::string &queryDB,
+             Debug(Debug::ERROR) << "TEA and companion AA databases contain different numbers of sequences\n";
+             EXIT(EXIT_FAILURE);
+         }
++        if (!Parameters::isEqualDbtype(qdbrExternalAux->getDbtype(), querySeqType) ||
++            !Parameters::isEqualDbtype(tdbrExternalAux->getDbtype(), Parameters::DBTYPE_AMINO_ACIDS) ||
++            !Parameters::isEqualDbtype(targetSeqType, Parameters::DBTYPE_AMINO_ACIDS)) {
++            Debug(Debug::ERROR) << "Combined prefilter requires matching query types and sequence targets\n";
++            EXIT(EXIT_FAILURE);
++        }
+ 
+         const char *auxMatrixSource = getenv("STEAM_UNGAPPED_AA_SUBMAT");
+         if (auxMatrixSource == NULL || auxMatrixSource[0] == '\0') {
+@@ -1077,7 +1083,7 @@ bool Prefiltering::runSplit(const std::string &resultDB, const std::string &resu
+         thread_idx = static_cast<unsigned int>(omp_get_thread_num());
+ #endif
+         Sequence seq(qdbr->getMaxSeqLen(), querySeqType, kmerSubMat, kmerSize, spacedKmer, aaBiasCorrection, true, spacedKmerPattern);
+-        Sequence seqExternalAux(qdbr->getMaxSeqLen(), Parameters::DBTYPE_AMINO_ACIDS,
++        Sequence seqExternalAux(qdbr->getMaxSeqLen(), externalAuxScoring ? querySeqType : Parameters::DBTYPE_AMINO_ACIDS,
+                                 externalAuxSubMat != NULL ? externalAuxSubMat : ungappedSubMat,
+                                 0, false, false);
+         QueryMatcher matcher(indexTable, sequenceLookup, kmerSubMat,  ungappedSubMat,
+diff --git a/src/prefiltering/QueryMatcher.cpp b/src/prefiltering/QueryMatcher.cpp
+index ed8ac38..fabeb8d 100644
+--- a/src/prefiltering/QueryMatcher.cpp
++++ b/src/prefiltering/QueryMatcher.cpp
+@@ -525,6 +525,19 @@ unsigned int QueryMatcher::scoreExternalCombined(const unsigned char *queryPrima
+         std::min(targetPrimaryLen - targetOffset, targetAuxLen - targetOffset));
+     int score = 0;
+     int maxScore = 0;
++    if (currentQuerySeq->profile_matrix != NULL) {
++        // Paired profiles already contain channel-weighted log-odds scores.
++        // Both channels follow the same diagonal; do not score their consensus.
++        for (unsigned int pos = 0; pos < length; pos++) {
++            score += currentQuerySeq->profile_for_alignment[
++                targetPrimary[targetOffset + pos] * queryPrimaryLen + queryOffset + pos];
++            score += externalAuxQuerySeq->profile_for_alignment[
++                targetAux[targetOffset + pos] * queryAuxLen + queryOffset + pos];
++            score = std::max(score, 0);
++            maxScore = std::max(maxScore, score);
++        }
++        return static_cast<unsigned int>(maxScore);
++    }
+     if (!pairedQueryRows.empty()) {
+         const auto *rows = pairedQueryRows.data() + queryOffset;
+         const int aaSize = externalAuxSubMat->alphabetSize;
+@@ -727,7 +740,21 @@ std::pair<size_t, unsigned int> QueryMatcher::rescoreHits(Sequence * querySeq, u
+     size_t elements = 0;
+     const unsigned char * query = querySeq->numSequence;
+     int maxSelfScore;
+-    if (externalAuxSequenceLookup != NULL && externalAuxSubMat != NULL && externalAuxQuerySeq != NULL) {
++    if (externalAuxQuerySeq != NULL && querySeq->profile_matrix != NULL) {
++        // Consensus letters need not be the maximum-scoring profile symbols.
++        // Bound every possible paired target before reducing scores to bytes.
++        maxSelfScore = 0;
++        for (int pos = 0; pos < querySeq->L; pos++) {
++            int primaryMax = 0, auxMax = 0;
++            for (int aa = 0; aa < Sequence::PROFILE_AA_SIZE; aa++) {
++                primaryMax = std::max(primaryMax, static_cast<int>(
++                    querySeq->profile_for_alignment[aa * querySeq->L + pos]));
++                auxMax = std::max(auxMax, static_cast<int>(
++                    externalAuxQuerySeq->profile_for_alignment[aa * externalAuxQuerySeq->L + pos]));
++            }
++            maxSelfScore += primaryMax + auxMax;
++        }
++    } else if (externalAuxSequenceLookup != NULL && externalAuxSubMat != NULL && externalAuxQuerySeq != NULL) {
+         maxSelfScore = static_cast<int>(scoreExternalCombined(
+             query, querySeq->L,
+             externalAuxQuerySeq->numSequence, externalAuxQuerySeq->L,

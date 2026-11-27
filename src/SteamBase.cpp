@@ -99,9 +99,9 @@ std::vector<Command> steamCommands = {
                 CITATION_MMSEQS2, {{"sequenceDB", DbType::ACCESS_MODE_INPUT, DbType::NEED_DATA, &DbValidator::sequenceDb },
                                    {"clusterDB", DbType::ACCESS_MODE_OUTPUT, DbType::NEED_DATA, &DbValidator::resultDb },
                                    {"tmpDir", DbType::ACCESS_MODE_OUTPUT, DbType::NEED_DATA, &DbValidator::directory }}},
-        // Prefilter (MMseqs2 k-mer prefilter, on TEA sequences with steam defaults)
+        // Prefilter (TEA k-mers followed by combined AA+TEA diagonal scoring)
         {"prefilter",    prefilter,    &localPar.teaprefilter,            COMMAND_PREFILTER,
-                "Fast k-mer prefilter on TEA sequences",
+                "Paired sequence or profile queries against paired sequence targets",
                 "steam prefilter queryDB targetDB prefilterDB\n",
                 STEAM_AUTHOR,
                 "<i:queryDB> <i:targetDB> <o:prefilterDB>",

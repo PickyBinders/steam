@@ -1,0 +1,29 @@
+diff --git a/src/prefiltering/Prefiltering.cpp b/src/prefiltering/Prefiltering.cpp
+index 38bbfbd..b5f4a39 100644
+--- a/src/prefiltering/Prefiltering.cpp
++++ b/src/prefiltering/Prefiltering.cpp
+@@ -81,6 +81,13 @@ Prefiltering::Prefiltering(const std::string &queryDB,
+         EXIT(EXIT_FAILURE);
+     }
+ 
++    const bool pairedProfile = externalAuxScoring &&
++        Parameters::isEqualDbtype(querySeqType, Parameters::DBTYPE_HMM_PROFILE);
++    if (pairedProfile && par.alphabetSize.values.aminoacid() != 21) {
++        Debug(Debug::ERROR) << "Paired profiles require the full 21-symbol alphabet\n";
++        EXIT(EXIT_FAILURE);
++    }
++
+     // init the substitution matrices
+     switch (querySeqType & Parameters::DBTYPE_MASK) {
+         case Parameters::DBTYPE_NUCLEOTIDES:
+@@ -135,6 +142,10 @@ Prefiltering::Prefiltering(const std::string &queryDB,
+             tdbr = PrefilteringIndexReader::openNewReader(tidxdbr, PrefilteringIndexReader::DBR1DATA, PrefilteringIndexReader::DBR1INDEX, false, threads, false, false);
+             PrefilteringIndexReader::printSummary(tidxdbr);
+             PrefilteringIndexData data = PrefilteringIndexReader::getMetadata(tidxdbr);
++            if (pairedProfile && data.alphabetSize != 21) {
++                Debug(Debug::ERROR) << "Paired profiles require a full 21-symbol target index\n";
++                EXIT(EXIT_FAILURE);
++            }
+             for (size_t i = 0; i < par.prefilter.size(); i++) {
+                 if (par.prefilter[i]->wasSet == false) {
+                     continue;

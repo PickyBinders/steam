@@ -275,12 +275,25 @@ void LocalParameters::configurePrefilter() {
         Debug(Debug::ERROR) << "--matcha is required for STEAM prefilter\n";
         EXIT(EXIT_FAILURE);
     }
-    for (const std::string &input : {db1, db2}) {
-        const std::string base = PrefilteringIndexReader::dbPathWithoutIndex(input);
-        if (!Parameters::isEqualDbtype(FileUtil::parseDbType(base.c_str()), DBTYPE_AMINO_ACIDS)
+    const int queryType = FileUtil::parseDbType(
+        PrefilteringIndexReader::dbPathWithoutIndex(db1).c_str());
+    const bool profileQuery = Parameters::isEqualDbtype(queryType, DBTYPE_HMM_PROFILE);
+    if (profileQuery) {
+        if (!ungappedTeaAa || (PARAM_EXACT_KMER_MATCHING.wasSet && exactKmerMatching != 0)
+                || PARAM_TEA_WEIGHT.wasSet || PARAM_TEA_SCALE.wasSet) {
+            Debug(Debug::ERROR) << "Paired profile prefilter requires combined scoring and profile-derived k-mers; "
+                               << "channel weights must already be included in the profiles\n";
+            EXIT(EXIT_FAILURE);
+        }
+        exactKmerMatching = 0;
+    }
+    for (int input = 0; input < 2; ++input) {
+        const std::string base = PrefilteringIndexReader::dbPathWithoutIndex(input == 0 ? db1 : db2);
+        const int expectedType = input == 0 && profileQuery ? DBTYPE_HMM_PROFILE : DBTYPE_AMINO_ACIDS;
+        if (!Parameters::isEqualDbtype(FileUtil::parseDbType(base.c_str()), expectedType)
                 || (ungappedTeaAa && !Parameters::isEqualDbtype(
-                    FileUtil::parseDbType((base + "_aa").c_str()), DBTYPE_AMINO_ACIDS))) {
-            Debug(Debug::ERROR) << "Combined STEAM prefilter requires paired TEA/AA sequence databases\n";
+                    FileUtil::parseDbType((base + "_aa").c_str()), expectedType))) {
+            Debug(Debug::ERROR) << "Combined STEAM prefilter requires paired TEA/AA queries and sequence targets\n";
             EXIT(EXIT_FAILURE);
         }
     }
